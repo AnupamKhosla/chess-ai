@@ -15,7 +15,7 @@ warnings.filterwarnings("ignore", category=PydanticDeprecatedSince20, module=r"c
 import chess
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
@@ -35,6 +35,7 @@ from server.import_puzzles import (
 from server.knowledge import seed_knowledge_base
 from server.llm import ChessTeacher
 from server.puzzles import PuzzleDB
+from server.providers import cli_auth_status, preset_for, provider_catalog, start_cli_login
 from server.rag import ChessRAG
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,9 @@ teacher = ChessTeacher(
     model=settings.llm_model,
     api_key=settings.llm_api_key,
     timeout=settings.llm_timeout,
+    effort=settings.llm_effort,
+    provider=settings.llm_provider,
+    provider_kind=preset_for(settings.llm_provider).kind if preset_for(settings.llm_provider) else "openai-compatible",
 )
 rag = ChessRAG(
     base_url=settings.effective_embed_base_url,
@@ -81,7 +85,13 @@ rag = ChessRAG(
     persist_dir=settings.chromadb_dir,
 )
 puzzle_db = PuzzleDB(db_path=settings.puzzle_db_path)
-games = GameManager(engine, teacher=teacher, rag=rag, rag_top_k=settings.rag_top_k)
+games = GameManager(
+    engine,
+    teacher=teacher,
+    rag=rag,
+    rag_top_k=settings.rag_top_k,
+    session_db_path=settings.session_db_path,
+)
 
 
 # --- Background initialization tasks ---
@@ -214,12 +224,28 @@ class NewGameRequest(BaseModel):
     depth: int = 10
     elo_profile: str = "intermediate"
     coach_name: str = "Anna Cramling"
+    opponent_rating: int = Field(default=1200, ge=400, le=3000)
 
 
 class MoveRequest(BaseModel):
     session_id: str
     move: str
     verbosity: str = "normal"
+
+
+class ChatRequest(BaseModel):
+    session_id: str
+    message: str
+    viewed_fen: str | None = None
+    response_mode: str = "fast"
+
+
+class ProviderUpdateRequest(BaseModel):
+    provider: str
+    base_url: str | None = None
+    model: str | None = None
+    api_key: str | None = None
+    effort: str | None = None
 
 
 # --- Endpoints ---
@@ -242,6 +268,69 @@ async def status():
     return {
         "ready": _all_done(),
         "tasks": _init_status,
+    }
+
+
+@app.get("/api/providers")
+async def providers():
+    """List supported AI connections without exposing any secret."""
+    return {
+        "active": teacher.provider_info(),
+        "providers": provider_catalog(teacher.provider_config()),
+        "key_storage": "memory-only",
+    }
+
+
+@app.post("/api/providers/config")
+async def configure_provider(req: ProviderUpdateRequest):
+    """Switch the coach connection for this local app process.
+
+    API keys are accepted over the local HTTP request and retained only in the
+    in-memory provider object. They are never returned or written to a file.
+    """
+    provider_id = req.provider.strip().lower()
+    preset = preset_for(provider_id)
+    if preset is None:
+        raise HTTPException(status_code=400, detail="Unknown provider")
+
+    base_url = (req.base_url if req.base_url is not None else preset.base_url).strip()
+    model = (req.model if req.model is not None else preset.model).strip()
+    effort = (req.effort if req.effort is not None else "auto").strip().lower()
+    if effort not in preset.effort_options:
+        raise HTTPException(status_code=400, detail=f"Unsupported reasoning effort for {preset.label}: {effort}")
+    if preset.kind not in {"codex-cli", "claude-cli"} and not base_url:
+        raise HTTPException(status_code=400, detail="Base URL is required for this provider")
+    if not model:
+        raise HTTPException(status_code=400, detail="Model is required")
+
+    teacher.configure(
+        provider=provider_id,
+        kind=preset.kind,
+        base_url=base_url,
+        model=model,
+        api_key=req.api_key.strip() if req.api_key and req.api_key.strip() else None,
+        effort=effort,
+    )
+    return {"active": teacher.provider_info(), "key_storage": "memory-only"}
+
+
+@app.post("/api/providers/auth/{provider_id}")
+async def authenticate_provider(provider_id: str):
+    """Start an explicit local CLI login flow for Codex or Claude Code."""
+    provider_id = provider_id.strip().lower()
+    preset = preset_for(provider_id)
+    if preset is None or preset.kind not in {"codex-cli", "claude-cli"}:
+        raise HTTPException(status_code=400, detail="This provider uses an API key")
+    if cli_auth_status(provider_id):
+        return {"status": "already_authenticated", "provider": provider_id}
+    try:
+        start_cli_login(provider_id)
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return {
+        "status": "login_started",
+        "provider": provider_id,
+        "message": "Complete the login in the browser window, then check status again.",
     }
 
 
@@ -289,7 +378,10 @@ async def best_moves(req: BestMovesRequest):
 @app.post("/api/game/new")
 async def new_game(req: NewGameRequest = NewGameRequest()):
     session_id, fen, status = games.new_game(
-        depth=req.depth, elo_profile=req.elo_profile, coach_name=req.coach_name
+        depth=req.depth,
+        elo_profile=req.elo_profile,
+        coach_name=req.coach_name,
+        opponent_rating=req.opponent_rating,
     )
     return {"session_id": session_id, "fen": fen, "status": status}
 
@@ -305,6 +397,29 @@ async def game_move(req: MoveRequest):
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
     return result
+
+
+@app.post("/api/game/chat")
+async def game_chat(req: ChatRequest):
+    try:
+        return await games.chat(
+            req.session_id,
+            req.message,
+            viewed_fen=req.viewed_fen,
+            response_mode=req.response_mode,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/game/{session_id}")
+async def game_state(session_id: str):
+    snapshot = games.snapshot(session_id)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return snapshot
 
 
 @app.get("/api/puzzle/random")

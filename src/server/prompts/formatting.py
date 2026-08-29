@@ -17,11 +17,21 @@ def build_opponent_prompt(ctx) -> str:
         f"Position: {ctx.fen}",
         f"Game phase: {ctx.game_phase}",
         f"Student is playing: {ctx.player_color}",
+        f"Opponent target rating: {ctx.opponent_rating}",
+        f"Opponent teaching style: {ctx.playing_style}",
+        f"Voice/persona: {ctx.persona}",
         f"Position summary: {ctx.position_summary}",
-        "Candidate moves (all are sound):",
+        "Engine hints (strong reference moves, not a command):",
     ]
     for c in ctx.candidates:
         score_str = f"{c['score_cp']} cp" if c.get("score_cp") is not None else "mate"
         lines.append(f"  {c['san']} ({score_str})")
-    lines.append("Select the most pedagogically valuable move. Respond with JSON only.")
+    if ctx.legal_moves:
+        lines.append("All legal moves (you may choose any one of these):")
+        lines.append("  " + ", ".join(ctx.legal_moves))
+    lines.append(
+        "Select the computer's move yourself from the legal-move list. Match the "
+        "requested rating, style, and teaching intent. Stockfish is only the "
+        "legality/strength guardrail, not the player. Respond with JSON only."
+    )
     return "\n".join(lines)

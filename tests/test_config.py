@@ -1,21 +1,22 @@
 """Tests for centralized configuration."""
 
 import os
-import pytest
-from pydantic import ValidationError
 from server.config import Settings
 
 
 class TestSettings:
-    def test_required_fields_missing(self, monkeypatch):
-        """App fails clearly if LLM_BASE_URL or LLM_MODEL not set."""
+    def test_local_defaults_without_provider_setup(self, monkeypatch):
+        """The app can start with the no-login local Ollama defaults."""
         monkeypatch.delenv("LLM_BASE_URL", raising=False)
         monkeypatch.delenv("LLM_MODEL", raising=False)
-        with pytest.raises(ValidationError):
-            Settings(_env_file=None)
+        monkeypatch.delenv("LLM_PROVIDER", raising=False)
+        settings = Settings(_env_file=None)
+        assert settings.llm_provider == "ollama"
+        assert settings.llm_base_url == "http://127.0.0.1:11434"
+        assert settings.llm_model == "llama3.2"
 
     def test_minimal_config(self, monkeypatch):
-        """Only LLM_BASE_URL and LLM_MODEL are required."""
+        """A hosted or local provider can still be configured explicitly."""
         monkeypatch.delenv("LLM_API_KEY", raising=False)
         monkeypatch.setenv("LLM_BASE_URL", "http://localhost:11434")
         monkeypatch.setenv("LLM_MODEL", "qwen2.5:14b")

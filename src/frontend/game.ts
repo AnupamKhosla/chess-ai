@@ -3,7 +3,14 @@ import { Api } from "chessground/api";
 import { DrawShape } from "chessground/draw";
 import { Key } from "chessground/types";
 import { BrowserEngine, EvalCallback, MultiPVCallback } from "./eval";
-import { createGame, sendMove, MoveResponse, CoachingData } from "./api";
+import {
+  createGame,
+  getGameState,
+  sendMove,
+  MoveResponse,
+  CoachingData,
+  GameStateResponse,
+} from "./api";
 
 export type PromotionPiece = "q" | "r" | "b" | "n";
 
@@ -24,6 +31,13 @@ export type CoachingCallback = (coaching: CoachingData) => void;
 
 /** Callback when the viewed ply changes (for UI navigation state). */
 export type PlyChangeCallback = (ply: number, maxPly: number) => void;
+
+/** Callback after the AI/engine has replied to the player's move. */
+export type OpponentMoveCallback = (
+  san: string,
+  method: "llm" | "engine" | null,
+  reason?: string | null,
+) => void;
 
 /**
  * Compute chessground-compatible legal destinations from a chess.js instance.
@@ -67,11 +81,13 @@ export class GameController {
   private onCoaching: CoachingCallback | null = null;
   private onPlyChange: PlyChangeCallback | null = null;
   private onMultiPV: MultiPVCallback | null = null;
+  private onOpponentMove: OpponentMoveCallback | null = null;
   private thinking = false;
   private currentPly = 0;
   private maxPly = 0;
   private coachingByPly: Map<number, CoachingData> = new Map();
   private eloProfile: string = "intermediate";
+  private opponentRating = 1200;
   private coachName: string = "Anna Cramling";
 
   constructor(board: Api, engine: BrowserEngine | null) {
@@ -116,9 +132,19 @@ export class GameController {
     this.onMultiPV = cb;
   }
 
+  /** Register a callback describing who selected the opponent move. */
+  setOpponentMoveCallback(cb: OpponentMoveCallback): void {
+    this.onOpponentMove = cb;
+  }
+
   /** Set ELO profile for coaching depth/style. */
   setEloProfile(profile: string): void {
     this.eloProfile = profile;
+  }
+
+  /** Set the numeric target rating for the AI opponent. */
+  setOpponentRating(rating: number): void {
+    this.opponentRating = Math.max(400, Math.min(3000, Math.round(rating)));
   }
 
   /** Set coach name for persona. */
@@ -200,6 +226,10 @@ export class GameController {
 
   /** Reset to starting position and create a server session. */
   async newGame(): Promise<void> {
+    // Cancel any in-flight browser search before replacing the position. This
+    // avoids stale Stockfish callbacks racing the new session on quick setting
+    // changes (rating/persona/theme).
+    this.engine?.stop();
     this.game = new Chess();
     this.playerColor = "w";
     this.thinking = false;
@@ -209,7 +239,7 @@ export class GameController {
     this.board.setAutoShapes([]);
 
     try {
-      const resp = await createGame(10, this.eloProfile, this.coachName);
+      const resp = await createGame(10, this.eloProfile, this.coachName, this.opponentRating);
       this.sessionId = resp.session_id;
     } catch (err) {
       console.warn("Failed to create server session:", err);
@@ -219,6 +249,40 @@ export class GameController {
     this.syncBoard();
     this.notifyMoveList();
     this.updateEval();
+  }
+
+  /** Resume a server session after a browser refresh, if it still exists. */
+  async restoreGame(sessionId: string): Promise<GameStateResponse | null> {
+    try {
+      const state = await getGameState(sessionId);
+      const restored = new Chess();
+      for (const san of state.moves) {
+        if (!restored.move(san)) return null;
+      }
+      this.game = restored;
+      this.sessionId = state.session_id;
+      this.playerColor = "w";
+      this.eloProfile = state.elo_profile;
+      this.opponentRating = state.opponent_rating ?? 1200;
+      this.coachName = state.coach_name;
+      this.thinking = false;
+      this.currentPly = state.moves.length;
+      this.maxPly = state.moves.length;
+      this.coachingByPly.clear();
+      this.board.setAutoShapes([]);
+      this.syncBoard();
+      this.notifyMoveList();
+      this.notifyPlyChange();
+      this.updateEval();
+      return state;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Return the server session id used by chat and move requests. */
+  getSessionId(): string | null {
+    return this.sessionId;
   }
 
   /** Set position from FEN string. Returns true if FEN was valid. */
@@ -416,6 +480,7 @@ export class GameController {
   private applyOpponentMove(resp: MoveResponse): void {
     if (!resp.opponent_move_uci) {
       // Game ended on player's move
+      this.onOpponentMove?.("", null);
       this.notifyStatus();
       return;
     }
@@ -439,6 +504,11 @@ export class GameController {
     this.syncBoard();
     this.notifyMoveList();
     this.notifyPlyChange();
+    this.onOpponentMove?.(
+      resp.opponent_move_san || "",
+      resp.opponent_move_method ?? "engine",
+      resp.opponent_move_reason ?? null,
+    );
 
     if (resp.status !== "playing") {
       this.onStatus?.(resp.status, resp.result);

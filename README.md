@@ -39,7 +39,24 @@ Stockfish            RAG (ChromaDB + Ollama)
 Position analyzer → Game tree → Coaching report
 ```
 
-**Stack:** Python 3.14, FastAPI/uvicorn, python-chess, Stockfish, ChromaDB, modern JavaScript frontend (chessground, snabbdom, stockfish.wasm)
+**Stack:** Python 3.14, FastAPI/uvicorn, python-chess, Stockfish, ChromaDB, SQLite, modern JavaScript frontend (chessground, snabbdom, stockfish.wasm)
+
+### AI connections
+
+The browser has one continuous coach room, while the server adapts the
+conversation to the selected connection. Open the menu and choose one of:
+
+- DeepSeek, OpenAI, Anthropic, or OpenRouter with an API key
+- Ollama or LM Studio for a local OpenAI-compatible model
+- ChatGPT/Codex login through an installed, authenticated `codex` CLI
+- Claude subscription through an installed, authenticated `claude` CLI
+
+API keys entered in the menu are held in server memory for the current run;
+they are not written to the repository, browser storage, or provider list.
+ChatGPT and Claude subscriptions are distinct from their developer APIs, so
+the two CLI choices use the local login rather than treating a subscription as
+an API key. The chess board, Stockfish, and engine-backed move coaching stay
+available if the selected language model is offline.
 
 The browser runs its own Stockfish instance for the eval bar. The server performs deeper analysis for coaching. The system degrades gracefully: if the LLM goes down, the game continues without coaching; if server Stockfish goes down, the browser engine takes over.
 
@@ -57,7 +74,7 @@ For deep architectural details, see [guide/DESIGN.md](guide/DESIGN.md).
 
 1. **Clone and enter the development environment:**
    ```bash
-   git clone git@github.com:stvhay/chess-coach.git
+   git clone https://github.com/AnupamKhosla/chess-ai.git
    cd chess-coach
    nix develop  # or use direnv if .envrc is configured
    ```
@@ -71,7 +88,7 @@ For deep architectural details, see [guide/DESIGN.md](guide/DESIGN.md).
 3. **Configure environment:**
    ```bash
    cp .env.example .env.chess
-   # Edit .env.chess with your LLM_BASE_URL and LLM_MODEL
+   # Optional: edit .env.chess for a hosted provider. Ollama is the no-login default.
    ```
 
    For local Ollama:
@@ -80,6 +97,10 @@ For deep architectural details, see [guide/DESIGN.md](guide/DESIGN.md).
    LLM_MODEL=qwen2.5:14b
    EMBED_MODEL=nomic-embed-text
    ```
+
+   For a free hosted trial, choose **OpenRouter API key** in the browser menu,
+   use the **OpenRouter Free Router** model, and paste your own OpenRouter key.
+   The key is held in memory only; the app does not ship or share a public key.
 
 4. **Build the frontend:**
    ```bash
@@ -107,6 +128,9 @@ The first startup seeds the ChromaDB knowledge base automatically (takes ~30 sec
 - **Puzzle database** — 5.7M Lichess puzzles with full-text search
 - **RAG-powered context** — retrieves relevant patterns, openings, and concepts from the knowledge base
 - **Graceful degradation** — game continues even if LLM/server goes down (browser-side Stockfish fallback)
+- **Continuous coach chat** — ask questions in natural English while the coach receives the current FEN, move list, level, and prior conversation
+- **Local session archive** — games and chat transcripts are stored in ignored local SQLite data and can resume after a restart
+- **Provider-neutral setup** — switch API-key providers, local models, Codex login, or Claude Code login without changing the board
 - **CLI and MCP server** — analyze positions from the command line or integrate with other tools
 
 ## Coaching Personas

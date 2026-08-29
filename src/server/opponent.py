@@ -1,13 +1,13 @@
 """Opponent move selection module.
 
-Extracts opponent move logic from the game loop. Detects game phase,
-filters Stockfish candidates by centipawn threshold, and optionally
-delegates to the LLM for pedagogically-motivated selection.
+Extracts opponent move logic from the game loop. Stockfish supplies analysis
+and safety checks; the configured AI chooses the actual legal move.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 
 import chess
 
@@ -25,6 +25,8 @@ ENDGAME_CP_THRESHOLD = 20
 
 CANDIDATE_COUNT = 5
 SELECTION_DEPTH = 12
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -81,12 +83,17 @@ async def select_opponent_move(
     board: chess.Board,
     engine: EngineProtocol,
     teacher: ChessTeacher | None = None,
+    opponent_rating: int = 1200,
+    playing_style: str = "balanced",
+    persona: str = "Anna Cramling",
 ) -> OpponentMoveResult:
-    """Select an opponent move using engine candidates + optional LLM.
+    """Select an opponent move using AI direction plus engine guardrails.
 
-    When teacher is None, only one candidate survives filtering, or the
-    game is in the endgame, returns the top engine move. Otherwise
-    delegates to the LLM for pedagogically-motivated selection.
+    Stockfish supplies analysis hints and a safe fallback. When a teacher
+    provider is configured, the AI chooses the actual move from the full legal
+    move list using the requested rating, style, and persona. This means the
+    AI is the player; Stockfish is the legality/strength guardrail. A fallback
+    is used only when the AI is unavailable or precision leaves no choice.
     """
     fen = board.fen()
     phase = detect_game_phase(board)
@@ -112,7 +119,9 @@ async def select_opponent_move(
     if len(filtered) <= 1 or teacher is None or phase == GamePhase.ENDGAME:
         return _make_result(best)
 
-    # Build context for LLM selection
+    # Build context for LLM selection. The AI sees every legal move, not just
+    # Stockfish's shortlist, so it can play a human-like teaching move rather
+    # than merely rubber-stamping the engine's first line.
     report = analyze(board)
     student_is_white = board.turn != chess.WHITE  # student is the side NOT about to move
     pos_desc = describe_position_from_report(report, student_is_white)
@@ -121,6 +130,7 @@ async def select_opponent_move(
     # Determine player color (opponent is the other side)
     player_color = "White" if board.turn == chess.BLACK else "Black"
 
+    legal_moves = list(board.legal_moves)
     candidate_dicts = [
         {"san": board.san(chess.Move.from_uci(m.uci)), "uci": m.uci, "score_cp": m.score_cp}
         for m in filtered
@@ -132,16 +142,37 @@ async def select_opponent_move(
         position_summary=summary,
         candidates=candidate_dicts,
         player_color=player_color,
+        opponent_rating=opponent_rating,
+        playing_style=playing_style,
+        persona=persona,
+        legal_moves=[board.san(move) for move in legal_moves],
     )
 
     result = await teacher.select_teaching_move(ctx)
     if result is not None:
         selected_san, reason = result
-        # Find matching candidate by SAN
-        for m in filtered:
-            move_obj = chess.Move.from_uci(m.uci)
-            if board.san(move_obj) == selected_san:
-                return _make_result(m, method="llm", reason=reason)
+        # Validate the AI's answer against the live board. SAN punctuation is
+        # normalized for tolerant parsing, but no unvalidated move can pass.
+        normalized = selected_san.strip().replace("0-0-0", "O-O-O").replace("0-0", "O-O")
+        normalized = normalized.rstrip("!?+#")
+        for move_obj in legal_moves:
+            legal_san = board.san(move_obj)
+            if legal_san.rstrip("!?+#") == normalized:
+                return _make_result(
+                    MoveInfo(uci=move_obj.uci(), score_cp=None, score_mate=None),
+                    method="llm",
+                    reason=reason,
+                )
+            if move_obj.uci() == selected_san.strip():
+                return _make_result(
+                    MoveInfo(uci=move_obj.uci(), score_cp=None, score_mate=None),
+                    method="llm",
+                    reason=reason,
+                )
 
     # Fallback: top engine move
+    logger.info(
+        "AI opponent unavailable or declined a candidate; using Stockfish fallback "
+        "(rating=%s, style=%s)", opponent_rating, playing_style,
+    )
     return _make_result(best)

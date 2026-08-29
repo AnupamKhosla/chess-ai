@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 
+from server.providers import ProviderConfig, chat_with_provider
 from server.prompts import (
     OPPONENT_SYSTEM_PROMPT,
     build_coaching_system_prompt,
@@ -30,6 +31,10 @@ class OpponentMoveContext:
     position_summary: str
     candidates: list[dict]   # [{san, uci, score_cp}, ...]
     player_color: str
+    opponent_rating: int = 1200
+    playing_style: str = "balanced"
+    persona: str = "Anna Cramling"
+    legal_moves: list[str] = field(default_factory=list)
 
 
 class ChessTeacher:
@@ -41,11 +46,46 @@ class ChessTeacher:
         model: str,
         api_key: str | None = None,
         timeout: float = 30.0,
+        provider: str = "openai-compatible",
+        provider_kind: str = "openai-compatible",
+        effort: str = "auto",
     ):
-        self._base_url = base_url.rstrip("/")
-        self._model = model
-        self._api_key = api_key
+        self._config = ProviderConfig(
+            provider=provider,
+            kind=provider_kind,
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
+            effort=effort,
+        )
         self._timeout = timeout
+
+    def configure(
+        self,
+        provider: str,
+        kind: str,
+        base_url: str,
+        model: str,
+        api_key: str | None = None,
+        effort: str = "auto",
+    ) -> None:
+        """Switch provider for future requests; the key stays in memory only."""
+        self._config = ProviderConfig(
+            provider=provider,
+            kind=kind,
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
+            effort=effort,
+        )
+
+    def provider_info(self) -> dict:
+        """Return safe connection metadata suitable for the browser UI."""
+        return self._config.public()
+
+    def provider_config(self) -> ProviderConfig:
+        """Return the active config for internal catalog/status queries."""
+        return self._config
 
     def _build_system_prompt(
         self,
@@ -119,7 +159,16 @@ class ChessTeacher:
             {"role": "system", "content": OPPONENT_SYSTEM_PROMPT},
             {"role": "user", "content": build_opponent_prompt(context)},
         ]
-        text = await self._chat(messages, timeout=10.0)
+        # CLI-backed subscriptions can spend several seconds starting the
+        # process and reasoning about the full legal-move list. The old fixed
+        # 10-second limit caused the UI to silently fall back to Stockfish.
+        if self._timeout < 1:
+            selection_timeout = self._timeout
+        elif self._config.kind in {"codex-cli", "claude-cli"}:
+            selection_timeout = max(self._timeout, 30.0)
+        else:
+            selection_timeout = max(self._timeout, 20.0)
+        text = await self._chat(messages, timeout=selection_timeout)
         if text is None:
             return None
         return _parse_move_selection(text)
@@ -138,30 +187,71 @@ class ChessTeacher:
             return None
         return _parse_theme_response(text)
 
+    async def chat_conversation(
+        self,
+        message: str,
+        history: list[dict[str, str]],
+        fen: str,
+        moves: list[str],
+        side: str,
+        coach: str = "Anna Cramling",
+        elo_profile: str = "intermediate",
+        opponent_rating: int = 1200,
+        playing_style: str = "balanced",
+        response_mode: str = "fast",
+    ) -> str | None:
+        """Continue a board-aware coaching conversation.
+
+        Stockfish remains the source of truth for legality and evaluation. The
+        language model supplies explanations, plans, questions, and practice
+        instructions around those facts.
+        """
+        system = self._build_system_prompt(
+            coach, "normal", elo_profile=elo_profile,
+        )
+        system += """
+
+You are the continuous conversation layer of a local chess coach.
+Use the supplied FEN as authoritative. Do not invent pieces, legal moves, or
+engine evaluations. If the user asks you to play a move, propose a legal SAN
+move and explain the intent briefly. If they ask for a lesson, use concrete
+plans, candidate moves, threats, checks, captures, pawn breaks, pins, forks,
+and the opponent's likely reply. You may describe a line, but label it as a
+teaching variation unless an engine score is supplied. Never claim to be the
+actual person named as the coach; use that style only as a broad teaching
+persona.
+"""
+        if response_mode == "fast":
+            system += """
+
+For fast conversation, answer in 1-3 short paragraphs. Lead with the concrete
+move or idea and avoid a long opening lecture unless the student asks for it.
+"""
+        position = (
+            f"Current FEN: {fen}\n"
+            f"Side the user plays: {side}\n"
+            f"Moves so far: {' '.join(moves[-120:]) if moves else '(starting position)'}\n"
+            f"Opponent target rating: {opponent_rating}\n"
+            f"Opponent teaching style: {playing_style}\n"
+            f"Student coaching profile: {elo_profile}\n"
+            f"Response mode: {response_mode}"
+        )
+        messages: list[dict] = [{"role": "system", "content": f"{system}\n\n{position}"}]
+        for entry in history[-20:]:
+            role = entry.get("role")
+            text = entry.get("text", "")
+            if role in {"user", "assistant"} and text:
+                messages.append({"role": role, "content": text})
+        messages.append({"role": "user", "content": message})
+        timeout = 20.0 if response_mode == "fast" else max(self._timeout, 45.0)
+        return await self._chat(messages, timeout=timeout)
+
     async def _chat(
         self, messages: list[dict], timeout: float | None = None
     ) -> str | None:
-        """POST to OpenAI-compatible /v1/chat/completions endpoint."""
+        """Send to the currently selected provider adapter."""
         t = timeout if timeout is not None else self._timeout
-        headers: dict[str, str] = {}
-        if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
-        payload = {
-            "model": self._model,
-            "messages": messages,
-        }
-        try:
-            async with httpx.AsyncClient(timeout=t) as client:
-                resp = await client.post(
-                    f"{self._base_url}/v1/chat/completions",
-                    json=payload,
-                    headers=headers,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                return data["choices"][0]["message"]["content"]
-        except (httpx.HTTPError, KeyError, ValueError, TypeError, IndexError):
-            return None
+        return await chat_with_provider(self._config, messages, timeout=t)
 
 
 def _parse_move_selection(text: str) -> tuple[str, str] | None:
@@ -178,6 +268,19 @@ def _parse_move_selection(text: str) -> tuple[str, str] | None:
             return move.strip(), str(reason)
     except (json.JSONDecodeError, KeyError, TypeError):
         pass
+
+    # Codex and some hosted models occasionally wrap otherwise-valid JSON in
+    # a fenced block or a short preamble. Decode the first JSON object before
+    # falling back to the narrower regex parser.
+    object_match = re.search(r"\{\s*[\"']selected_move[\s\S]*?\}", text)
+    if object_match:
+        try:
+            data = json.loads(object_match.group(0).replace("'", '"'))
+            move = data.get("selected_move")
+            if isinstance(move, str) and move.strip():
+                return move.strip(), str(data.get("reason", ""))
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            pass
 
     # Regex fallback: look for "selected_move": "Nf3" pattern
     m = re.search(r'"selected_move"\s*:\s*"([^"]+)"', text)

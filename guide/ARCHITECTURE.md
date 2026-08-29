@@ -80,17 +80,19 @@ requests:
   async lock serializes access because Stockfish is single-threaded. Includes
   crash recovery: if the process dies mid-analysis, the wrapper restarts it and
   retries.
-- **teacher** (ChessTeacher) — Ollama HTTP client via httpx. Sends structured
-  prompts assembled by the report serializer; returns natural-language
-  explanations. Returns None on failure so the game proceeds without coaching.
+- **teacher** (ChessTeacher) — provider-neutral conversation client. It supports
+  OpenAI-compatible APIs (DeepSeek, OpenAI, OpenRouter, Ollama, and LM Studio),
+  Anthropic's native messages API, and read-only Codex/Claude CLI logins.
+  Returns None on failure so the game proceeds without coaching.
 - **rag** (ChessRAG) — ChromaDB embedded vector store paired with Ollama
   embedding via nomic-embed-text. Stores and retrieves positional patterns and
   pedagogical content by semantic similarity.
 - **puzzle_db** (PuzzleDB) — SQLite database with FTS5 virtual tables holding
   5.7 million Lichess puzzles. WAL mode for concurrent reads. Degrades
   gracefully if the database file is missing.
-- **games** (GameManager) — Owns the session dictionary; coordinates engine,
-  teacher, and RAG for each coaching interaction.
+- **games** (GameManager) — Owns the active session dictionary, coordinates
+  engine/teacher/RAG interactions, and persists game/chat state through the
+  local SQLite session store.
 
 ### Module Map
 
@@ -128,8 +130,14 @@ Each server module has a single responsibility:
   PGN context, position descriptions, student move analysis, alternatives, and
   RAG context.
 - **llm.py** — ChessTeacher: async Ollama client with two entry points —
-  `explain_move()` for coaching explanations and `select_teaching_move()` for
-  pedagogical opponent move selection.
+  `explain_move()` for coaching explanations, `select_teaching_move()` for
+  pedagogical opponent move selection, and `chat_conversation()` for the
+  board-aware continuous coach room.
+- **providers.py** — Runtime provider catalog and adapters. API keys never
+  appear in public metadata and CLI providers run with read-only/no-tool
+  settings.
+- **session_store.py** — Local SQLite persistence for SAN moves, game settings,
+  and coach transcript. It never stores provider credentials.
 - **rag.py** — ChessRAG: ChromaDB + Ollama embedding wrapper for semantic
   knowledge retrieval by position similarity.
 - **knowledge.py** — RAG query construction: builds semantic searches from
@@ -161,6 +169,10 @@ Each server module has a single responsibility:
 | `/api/engine/best-moves` | POST | MultiPV candidate moves |
 | `/api/game/new` | POST | Create game session (accepts elo_profile) |
 | `/api/game/move` | POST | Apply player move, return coaching + opponent response |
+| `/api/game/{session_id}` | GET | Restore a local game and chat transcript |
+| `/api/game/chat` | POST | Continue a board-aware coach conversation |
+| `/api/providers` | GET | List provider choices and active safe metadata |
+| `/api/providers/config` | POST | Switch the in-memory provider configuration |
 | `/api/puzzle/random` | GET | Random puzzles with theme/rating filters |
 | `/api/puzzle/{id}` | GET | Fetch puzzle by ID |
 

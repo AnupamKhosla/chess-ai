@@ -20,6 +20,8 @@ class Evaluation:
 
 @dataclass
 class MoveInfo:
+    """A legal engine candidate used for analysis or AI move selection."""
+
     uci: str
     score_cp: int | None
     score_mate: int | None

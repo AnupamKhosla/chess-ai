@@ -18,10 +18,14 @@ class Settings(BaseSettings):
     )
 
     # LLM (OpenAI-compatible — works with Ollama, OpenRouter, litellm, etc.)
-    llm_base_url: str
-    llm_model: str
+    # Ollama is the no-login local default. Hosted providers can be selected
+    # from the browser's AI setup menu.
+    llm_provider: str = "ollama"
+    llm_base_url: str = "http://127.0.0.1:11434"
+    llm_model: str = "llama3.2"
     llm_api_key: str | None = None
     llm_timeout: float = 30.0
+    llm_effort: str = "auto"
 
     # Embeddings (defaults to LLM service if not set separately)
     embed_base_url: str | None = None
@@ -36,6 +40,7 @@ class Settings(BaseSettings):
     # Data paths
     chromadb_dir: str = "data/chromadb"
     puzzle_db_path: str = "data/puzzles.db"
+    session_db_path: str = "data/sessions.db"
 
     # RAG configuration
     rag_top_k: int = 3  # Number of knowledge chunks to retrieve (0 = disabled)

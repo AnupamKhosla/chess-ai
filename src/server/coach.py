@@ -55,6 +55,7 @@ class CoachingResponse:
     severity: int = 0  # 0-100, higher = more urgent
     tactics_summary: str = ""
     debug_prompt: str = ""  # the grounded prompt sent to the LLM
+    source: str = "stockfish"  # stockfish or ai+stockfish
 
 
 # ---------------------------------------------------------------------------

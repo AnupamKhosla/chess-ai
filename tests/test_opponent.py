@@ -179,6 +179,23 @@ class TestSelectOpponentMove:
         assert result.reason == "develops queenside play"
         teacher.select_teaching_move.assert_called_once()
 
+    async def test_ai_can_choose_legal_move_outside_engine_shortlist(self):
+        """The AI is the player; engine hints do not restrict legal choices."""
+        engine = AsyncMock()
+        board = chess.Board()
+        board.push_san("e4")
+        engine.best_moves = AsyncMock(return_value=[
+            MoveInfo(uci="e7e5", score_cp=-10, score_mate=None),
+            MoveInfo(uci="d7d5", score_cp=-15, score_mate=None),
+        ])
+        teacher = AsyncMock()
+        teacher.select_teaching_move = AsyncMock(return_value=("a6", "creates a flexible counterplay plan"))
+
+        result = await select_opponent_move(board, engine, teacher=teacher)
+
+        assert result.uci == "a7a6"
+        assert result.method == "llm"
+
     async def test_fallback_on_llm_failure(self):
         """When LLM returns None, fall back to top engine move."""
         engine = AsyncMock()

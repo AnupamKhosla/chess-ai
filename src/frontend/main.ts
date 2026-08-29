@@ -1,7 +1,14 @@
 import { createBoard } from "./board";
 import { BrowserEngine, MultiPVInfo } from "./eval";
 import { GameController, PromotionPiece } from "./game";
-import { CoachingData } from "./api";
+import {
+  ChatMessage,
+  CoachingData,
+  configureProvider,
+  getProviders,
+  sendChat,
+  startProviderLogin,
+} from "./api";
 import { RemoteUCI } from "./remote";
 
 /** Generate a chessground-compatible board SVG with the given square colors. */
@@ -48,6 +55,20 @@ interface CustomTheme {
   board: { light: string; dark: string };
   lastUsed: number; // timestamp
 }
+
+interface SpeechRecognitionLike {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  start(): void;
+  stop(): void;
+  onstart: (() => void) | null;
+  onend: (() => void) | null;
+  onerror: (() => void) | null;
+  onresult: ((event: any) => void) | null;
+}
+
+type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
 
 const CUSTOM_THEMES_KEY = "chess-teacher-custom-themes";
 const MAX_CUSTOM_THEMES = 5;
@@ -176,13 +197,32 @@ function init() {
   title.textContent = "Chess Teacher";
   header.appendChild(title);
 
+  const headerTools = document.createElement("div");
+  headerTools.className = "header-tools";
+  header.appendChild(headerTools);
+
+  const themeToggleBtn = document.createElement("button");
+  themeToggleBtn.className = "theme-toggle-btn";
+  themeToggleBtn.type = "button";
+  themeToggleBtn.title = "Switch between dark and light mode";
+  themeToggleBtn.setAttribute("aria-label", "Switch theme");
+  headerTools.appendChild(themeToggleBtn);
+
+  const sidebarToggleBtn = document.createElement("button");
+  sidebarToggleBtn.className = "sidebar-toggle-btn";
+  sidebarToggleBtn.type = "button";
+  sidebarToggleBtn.textContent = "▸ Panel";
+  sidebarToggleBtn.title = "Collapse or expand the analysis panel";
+  sidebarToggleBtn.setAttribute("aria-label", "Collapse or expand analysis panel");
+  headerTools.appendChild(sidebarToggleBtn);
+
   const hamburgerBtn = document.createElement("button");
   hamburgerBtn.className = "hamburger-btn";
   hamburgerBtn.setAttribute("aria-label", "Menu");
   for (let i = 0; i < 3; i++) {
     hamburgerBtn.appendChild(document.createElement("span"));
   }
-  header.appendChild(hamburgerBtn);
+  headerTools.appendChild(hamburgerBtn);
 
   // Hamburger menu dropdown
   const hamburgerMenu = document.createElement("div");
@@ -245,6 +285,24 @@ function init() {
 
   hamburgerMenu.appendChild(themeSelect);
 
+  function syncThemeToggle() {
+    const isLight = document.documentElement.getAttribute("data-theme") === "light";
+    themeToggleBtn.textContent = isLight ? "☾ Dark" : "☼ Light";
+    themeToggleBtn.setAttribute("aria-label", isLight ? "Switch to dark mode" : "Switch to light mode");
+  }
+
+  themeToggleBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const nextTheme = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+    clearCustomThemeVars();
+    document.documentElement.setAttribute("data-theme", nextTheme);
+    localStorage.setItem("chess-teacher-theme", nextTheme);
+    themeSelect.value = nextTheme;
+    syncThemeToggle();
+    updateBoardColors();
+  });
+  syncThemeToggle();
+
   const themeDescInput = document.createElement("input");
   themeDescInput.type = "text";
   themeDescInput.placeholder = "Describe a theme\u2026";
@@ -301,6 +359,289 @@ function init() {
     }
   });
 
+  // AI provider setup. Secrets are sent only when the user presses Save and
+  // are held by the local server for this run; they are never put in storage.
+  const providerSectionLabel = document.createElement("div");
+  providerSectionLabel.className = "menu-label provider-section-label";
+  providerSectionLabel.textContent = "AI connection";
+  hamburgerMenu.appendChild(providerSectionLabel);
+
+  const providerSelect = document.createElement("select");
+  providerSelect.className = "elo-select provider-field";
+  providerSelect.setAttribute("aria-label", "AI provider");
+  hamburgerMenu.appendChild(providerSelect);
+
+  const providerModelLabel = document.createElement("div");
+  providerModelLabel.className = "menu-label provider-field-label";
+  providerModelLabel.textContent = "Model preset";
+  hamburgerMenu.appendChild(providerModelLabel);
+
+  const providerModelSelect = document.createElement("select");
+  providerModelSelect.className = "elo-select provider-field";
+  providerModelSelect.setAttribute("aria-label", "AI model preset");
+  hamburgerMenu.appendChild(providerModelSelect);
+
+  const providerModelInput = document.createElement("input");
+  providerModelInput.type = "text";
+  providerModelInput.className = "fen-input provider-field";
+  providerModelInput.placeholder = "Custom model ID";
+  providerModelInput.setAttribute("aria-label", "AI model");
+  hamburgerMenu.appendChild(providerModelInput);
+
+  const providerEffortLabel = document.createElement("div");
+  providerEffortLabel.className = "menu-label provider-field-label";
+  providerEffortLabel.textContent = "Reasoning effort";
+  hamburgerMenu.appendChild(providerEffortLabel);
+
+  const providerEffortSelect = document.createElement("select");
+  providerEffortSelect.className = "elo-select provider-field";
+  providerEffortSelect.setAttribute("aria-label", "AI reasoning effort");
+  hamburgerMenu.appendChild(providerEffortSelect);
+
+  const providerBaseInput = document.createElement("input");
+  providerBaseInput.type = "url";
+  providerBaseInput.className = "fen-input provider-field";
+  providerBaseInput.placeholder = "Base URL (for API/local providers)";
+  providerBaseInput.setAttribute("aria-label", "AI base URL");
+  hamburgerMenu.appendChild(providerBaseInput);
+
+  const providerKeyInput = document.createElement("input");
+  providerKeyInput.type = "password";
+  providerKeyInput.className = "fen-input provider-field";
+  providerKeyInput.placeholder = "API key (never saved)";
+  providerKeyInput.autocomplete = "off";
+  providerKeyInput.setAttribute("aria-label", "AI API key");
+  hamburgerMenu.appendChild(providerKeyInput);
+
+  const providerSaveBtn = document.createElement("button");
+  providerSaveBtn.textContent = "Use this connection";
+  hamburgerMenu.appendChild(providerSaveBtn);
+
+  const providerLoginBtn = document.createElement("button");
+  providerLoginBtn.className = "provider-login-btn";
+  providerLoginBtn.type = "button";
+  providerLoginBtn.hidden = true;
+  hamburgerMenu.appendChild(providerLoginBtn);
+
+  const providerStatus = document.createElement("div");
+  providerStatus.className = "provider-status";
+  providerStatus.textContent = "Loading connections…";
+  hamburgerMenu.appendChild(providerStatus);
+
+  let providerPresets: Array<{
+    id: string;
+    label: string;
+    base_url: string;
+    model: string;
+    requires_key: boolean;
+    kind: string;
+    installed: boolean | null;
+    authenticated: boolean | null;
+    help: string;
+    effort_options: string[];
+  }> = [];
+  let activeProviderLabel = "";
+  let syncAgentStatus: ((label: string) => void) | null = null;
+
+  const modelChoices: Record<string, Array<{ model: string; label: string }>> = {
+    openai: [
+      { model: "gpt-5.6-luna", label: "GPT-5.6 Luna · fastest / lowest cost" },
+      { model: "gpt-5.6-terra", label: "GPT-5.6 Terra · balanced" },
+      { model: "gpt-5.6-sol", label: "GPT-5.6 Sol · flagship / deepest" },
+      { model: "gpt-5.4", label: "GPT-5.4 · strong previous flagship" },
+    ],
+    deepseek: [
+      { model: "deepseek-v4-flash", label: "DeepSeek V4 Flash · fast" },
+      { model: "deepseek-v4-pro", label: "DeepSeek V4 Pro · deeper" },
+    ],
+    openrouter: [
+      { model: "openrouter/free", label: "OpenRouter Free Router · free tier" },
+      { model: "openai/gpt-oss-20b:free", label: "GPT-OSS 20B · free / fast" },
+      { model: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash · hosted" },
+    ],
+    codex: [
+      { model: "default", label: "Codex default · account-selected" },
+      { model: "gpt-5.6-luna", label: "GPT-5.6 Luna · fast" },
+      { model: "gpt-5.6-terra", label: "GPT-5.6 Terra · balanced" },
+      { model: "gpt-5.6-sol", label: "GPT-5.6 Sol · deepest" },
+    ],
+    ollama: [
+      { model: "llama3.2", label: "Llama 3.2 · local default" },
+      { model: "qwen3:8b", label: "Qwen 3 8B · local reasoning" },
+      { model: "deepseek-r1:8b", label: "DeepSeek R1 8B · local thinking" },
+    ],
+    lmstudio: [{ model: "local-model", label: "LM Studio current model" }],
+    anthropic: [
+      { model: "claude-sonnet-4-6", label: "Claude Sonnet · balanced" },
+      { model: "claude-opus-4-6", label: "Claude Opus · deepest" },
+    ],
+    claude: [
+      { model: "sonnet", label: "Claude Sonnet · balanced" },
+      { model: "opus", label: "Claude Opus · deepest" },
+    ],
+  };
+
+  const effortLabels: Record<string, string> = {
+    auto: "Auto · provider default",
+    none: "None · lowest latency",
+    minimal: "Minimal · very fast",
+    low: "Low · fast",
+    medium: "Medium · balanced",
+    high: "High · deeper calculation",
+    xhigh: "XHigh · very deep",
+    max: "Max · quality first",
+  };
+
+  function renderModelChoices(providerId: string, currentModel: string) {
+    providerModelSelect.innerHTML = "";
+    const choices = modelChoices[providerId] || [];
+    for (const choice of choices) {
+      const option = document.createElement("option");
+      option.value = choice.model;
+      option.textContent = choice.label;
+      providerModelSelect.appendChild(option);
+    }
+    const custom = document.createElement("option");
+    custom.value = "__custom__";
+    custom.textContent = "Custom model ID…";
+    providerModelSelect.appendChild(custom);
+    providerModelSelect.value = choices.some((choice) => choice.model === currentModel)
+      ? currentModel : "__custom__";
+  }
+
+  function renderEffortChoices(preset: (typeof providerPresets)[number], current = "auto") {
+    providerEffortSelect.innerHTML = "";
+    for (const effort of preset.effort_options || ["auto", "low", "medium", "high"]) {
+      const option = document.createElement("option");
+      option.value = effort;
+      option.textContent = effortLabels[effort] || effort;
+      providerEffortSelect.appendChild(option);
+    }
+    providerEffortSelect.value = preset.effort_options.includes(current) ? current : "auto";
+  }
+
+  function syncProviderLoginButton(
+    preset: (typeof providerPresets)[number] | undefined,
+    authenticated: boolean | null = preset?.authenticated ?? null,
+  ) {
+    const isCli = preset?.kind === "codex-cli" || preset?.kind === "claude-cli";
+    providerLoginBtn.hidden = !isCli;
+    if (!isCli || !preset) return;
+    const service = preset.id === "codex" ? "ChatGPT" : "Claude";
+    providerLoginBtn.textContent = authenticated
+      ? `Use ${service} login`
+      : `Sign in with ${service}`;
+  }
+
+  function fillProviderFields(providerId: string) {
+    const preset = providerPresets.find((item) => item.id === providerId);
+    if (!preset) return;
+    providerModelInput.value = preset.model;
+    renderModelChoices(providerId, preset.model);
+    renderEffortChoices(preset);
+    providerBaseInput.value = preset.base_url;
+    providerKeyInput.value = "";
+    providerKeyInput.placeholder = preset.requires_key
+      ? "API key (held in memory only)"
+      : "No key needed for this connection";
+    providerKeyInput.disabled = !preset.requires_key;
+    providerBaseInput.disabled = preset.kind === "codex-cli" || preset.kind === "claude-cli";
+    providerStatus.textContent = preset.help;
+    if (preset.installed === false) {
+      providerStatus.textContent += " CLI not found on this machine.";
+    }
+    syncProviderLoginButton(preset);
+  }
+
+  async function loadProviderSetup() {
+    try {
+      const data = await getProviders();
+      providerPresets = data.providers;
+      activeProviderLabel = data.active.label;
+      syncAgentStatus?.(activeProviderLabel);
+      providerSelect.innerHTML = "";
+      for (const preset of providerPresets) {
+        const option = document.createElement("option");
+        option.value = preset.id;
+        option.textContent = preset.label;
+        providerSelect.appendChild(option);
+      }
+      providerSelect.value = data.active.provider;
+      providerModelInput.value = data.active.model;
+      renderModelChoices(data.active.provider, data.active.model);
+      const activePreset = providerPresets.find((item) => item.id === data.active.provider);
+      if (activePreset) renderEffortChoices(activePreset, data.active.effort);
+      providerBaseInput.value = data.active.base_url;
+      providerKeyInput.disabled = data.active.kind === "codex-cli" || data.active.kind === "claude-cli";
+      providerKeyInput.placeholder = data.active.has_api_key
+        ? "Key already configured (leave blank to clear)"
+        : "API key (held in memory only)";
+      providerStatus.textContent = `${data.active.label} · ${data.active.model} · ${data.active.effort} effort · ${data.key_storage}`;
+      syncProviderLoginButton(
+        providerPresets.find((item) => item.id === data.active.provider),
+        data.active.authenticated ?? null,
+      );
+    } catch {
+      providerStatus.textContent = "Provider setup unavailable until the server is running.";
+    }
+  }
+
+  providerModelSelect.addEventListener("change", () => {
+    if (providerModelSelect.value !== "__custom__") {
+      providerModelInput.value = providerModelSelect.value;
+    }
+  });
+
+  providerSelect.addEventListener("change", () => fillProviderFields(providerSelect.value));
+  providerLoginBtn.addEventListener("click", async () => {
+    const providerId = providerSelect.value;
+    const preset = providerPresets.find((item) => item.id === providerId);
+    if (!preset || (preset.kind !== "codex-cli" && preset.kind !== "claude-cli")) return;
+    providerLoginBtn.disabled = true;
+    try {
+      if (preset.authenticated) {
+        const response = await configureProvider({
+          provider: providerId,
+          model: providerModelInput.value.trim() || preset.model,
+          effort: providerEffortSelect.value,
+        });
+        activeProviderLabel = response.active.label;
+        syncAgentStatus?.(activeProviderLabel);
+        providerStatus.textContent = `${response.active.label} active · local login selected`;
+      } else {
+        const response = await startProviderLogin(providerId);
+        providerStatus.textContent = response.message || "Login started in a browser window.";
+      }
+    } catch (error) {
+      providerStatus.textContent = error instanceof Error ? error.message : "Login failed";
+    } finally {
+      providerLoginBtn.disabled = false;
+    }
+  });
+  providerSaveBtn.addEventListener("click", async () => {
+    providerSaveBtn.disabled = true;
+    providerSaveBtn.textContent = "Connecting…";
+    try {
+      const response = await configureProvider({
+        provider: providerSelect.value,
+        model: providerModelInput.value.trim(),
+        base_url: providerBaseInput.value.trim(),
+        api_key: providerKeyInput.value.trim() || undefined,
+        effort: providerEffortSelect.value,
+      });
+      activeProviderLabel = response.active.label;
+      syncAgentStatus?.(activeProviderLabel);
+      providerStatus.textContent = `${response.active.label} active · key stored in memory only`;
+      providerKeyInput.value = "";
+    } catch (error) {
+      providerStatus.textContent = error instanceof Error ? error.message : "Connection failed";
+    } finally {
+      providerSaveBtn.disabled = false;
+      providerSaveBtn.textContent = "Use this connection";
+    }
+  });
+  void loadProviderSetup();
+
   // Theme change handler
   themeSelect.addEventListener("change", () => {
     const val = themeSelect.value;
@@ -313,12 +654,14 @@ function init() {
         touchCustomTheme(label);
         applyCustomTheme(theme);
         localStorage.setItem("chess-teacher-theme", val);
+        syncThemeToggle();
       }
     } else {
       // Built-in theme
       clearCustomThemeVars();
       document.documentElement.setAttribute("data-theme", val);
       localStorage.setItem("chess-teacher-theme", val);
+      syncThemeToggle();
       updateBoardColors();
     }
   });
@@ -405,19 +748,267 @@ function init() {
   layout.className = "layout";
   layoutWrap.appendChild(layout);
 
+  let rightPanelCollapsed = localStorage.getItem("chess-teacher-right-panel") === "collapsed";
+  function setRightPanelCollapsed(collapsed: boolean) {
+    rightPanelCollapsed = collapsed;
+    layout.classList.toggle("right-collapsed", collapsed);
+    sidebarToggleBtn.textContent = collapsed ? "◂ Panel" : "▸ Panel";
+    sidebarToggleBtn.setAttribute("aria-label", collapsed ? "Expand analysis panel" : "Collapse analysis panel");
+    localStorage.setItem("chess-teacher-right-panel", collapsed ? "collapsed" : "open");
+  }
+  setRightPanelCollapsed(rightPanelCollapsed);
+  sidebarToggleBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    setRightPanelCollapsed(!rightPanelCollapsed);
+  });
+
   // 1. Coach column (left)
   const coachColumn = document.createElement("div");
   coachColumn.className = "coach-column";
   layout.appendChild(coachColumn);
 
+  const coachHeader = document.createElement("div");
+  coachHeader.className = "coach-header";
   const coachLabel = document.createElement("div");
   coachLabel.className = "coach-column-label";
-  coachLabel.textContent = "Coach";
-  coachColumn.appendChild(coachLabel);
+  coachLabel.textContent = "Coach room";
+  coachHeader.appendChild(coachLabel);
+  const coachHeaderActions = document.createElement("div");
+  coachHeaderActions.className = "coach-header-actions";
+  coachHeader.appendChild(coachHeaderActions);
+  const quickLoginBtn = document.createElement("button");
+  quickLoginBtn.className = "quick-login-btn";
+  quickLoginBtn.type = "button";
+  quickLoginBtn.textContent = activeProviderLabel === "ChatGPT / Codex login"
+    ? "ChatGPT active"
+    : "ChatGPT login";
+  quickLoginBtn.title = "Use your local ChatGPT/Codex login";
+  coachHeaderActions.appendChild(quickLoginBtn);
+  coachColumn.appendChild(coachHeader);
+
+  const savedCoach = localStorage.getItem("chess-teacher-coach") || "Anna Cramling";
+  const coachOptions: [string, string][] = [
+    ["Anna Cramling", "Anna Cramling · friendly trainer"],
+    ["Daniel Naroditsky", "Daniel Naroditsky · precise teacher"],
+    ["GothamChess", "GothamChess · energetic analyst"],
+    ["GM Ben Finegold", "GM Ben Finegold · fundamentals"],
+    ["Hikaru", "Hikaru · practical fighter"],
+    ["Judit Polgar", "Judit Polgar · attacking ideas"],
+    ["Magnus Carlsen", "Magnus Carlsen · practical pressure"],
+    ["Vishy Anand", "Vishy Anand · calm calculation"],
+    ["Garry Kasparov", "Garry Kasparov · dynamic initiative"],
+    ["Mikhail Botvinnik", "Mikhail Botvinnik · structured plans"],
+    ["Paul Morphy", "Paul Morphy · rapid development"],
+    ["Mikhail Tal", "Mikhail Tal · tactical imagination"],
+    ["Jose Raul Capablanca", "Jose Raul Capablanca · clarity"],
+    ["Faustino Oro", "Faustino Oro · modern calculation"],
+  ];
+
+  const personaRow = document.createElement("div");
+  personaRow.className = "chat-persona-row";
+  const personaLabel = document.createElement("span");
+  personaLabel.className = "chat-persona-label";
+  personaLabel.textContent = "AI persona";
+  personaRow.appendChild(personaLabel);
+  const personaSelect = document.createElement("select");
+  personaSelect.className = "chat-persona-select";
+  personaSelect.setAttribute("aria-label", "AI coach persona");
+  for (const [value, label] of coachOptions) {
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = label;
+    if (value === savedCoach) opt.selected = true;
+    personaSelect.appendChild(opt);
+  }
+  personaRow.appendChild(personaSelect);
+  coachColumn.appendChild(personaRow);
+
+  const responseModeRow = document.createElement("div");
+  responseModeRow.className = "chat-persona-row";
+  const responseModeLabel = document.createElement("span");
+  responseModeLabel.className = "chat-persona-label";
+  responseModeLabel.textContent = "Response speed";
+  responseModeRow.appendChild(responseModeLabel);
+  const chatModeSelect = document.createElement("select");
+  chatModeSelect.className = "chat-persona-select";
+  chatModeSelect.setAttribute("aria-label", "Chat response speed");
+  for (const [value, label] of [["fast", "Fast · realtime coach"], ["deep", "Deep · longer lesson"]]) {
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = label;
+    if (value === (localStorage.getItem("chess-teacher-response-mode") || "fast")) opt.selected = true;
+    chatModeSelect.appendChild(opt);
+  }
+  responseModeRow.appendChild(chatModeSelect);
+  coachColumn.appendChild(responseModeRow);
 
   const coachMessages = document.createElement("div");
   coachMessages.className = "coach-messages";
   coachColumn.appendChild(coachMessages);
+
+  const chatComposer = document.createElement("form");
+  chatComposer.className = "chat-composer";
+  const chatInput = document.createElement("textarea");
+  chatInput.className = "chat-input";
+  chatInput.rows = 2;
+  chatInput.placeholder = "Ask about this position… (Enter to send)";
+  chatInput.setAttribute("aria-label", "Message your chess coach");
+  chatComposer.appendChild(chatInput);
+
+  const voiceOutputBtn = document.createElement("button");
+  voiceOutputBtn.className = "voice-btn";
+  voiceOutputBtn.type = "button";
+  voiceOutputBtn.title = "Speak coach replies and play move sounds";
+  voiceOutputBtn.setAttribute("aria-label", "Toggle spoken coaching and move sounds");
+  coachHeaderActions.insertBefore(voiceOutputBtn, quickLoginBtn);
+
+  const voiceInputBtn = document.createElement("button");
+  voiceInputBtn.className = "voice-btn voice-input-btn";
+  voiceInputBtn.type = "button";
+  voiceInputBtn.textContent = "🎙 Talk";
+  voiceInputBtn.title = "Speak a question to your coach";
+  voiceInputBtn.setAttribute("aria-label", "Talk to the chess coach");
+  coachHeaderActions.insertBefore(voiceInputBtn, quickLoginBtn);
+
+  let voiceOutputEnabled = localStorage.getItem("chess-teacher-voice") === "true";
+  let audioContext: AudioContext | null = null;
+  let recognition: SpeechRecognitionLike | null = null;
+
+  function syncVoiceButton() {
+    voiceOutputBtn.textContent = voiceOutputEnabled ? "🔊 Voice on" : "🔊 Start voice";
+    voiceOutputBtn.classList.toggle("active", voiceOutputEnabled);
+  }
+
+  function speakCoach(text: string) {
+    if (!voiceOutputEnabled || !("speechSynthesis" in window)) return;
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text.replace(/[*_#`]/g, "").slice(0, 1200));
+    utterance.rate = 1.05;
+    utterance.pitch = 1;
+    window.speechSynthesis.speak(utterance);
+  }
+
+  function playMoveSound(kind: "player" | "ai") {
+    if (!voiceOutputEnabled) return;
+    const audioWindow = window as typeof window & { webkitAudioContext?: typeof AudioContext };
+    const AudioContextClass = window.AudioContext || audioWindow.webkitAudioContext;
+    if (!AudioContextClass) return;
+    audioContext ||= new AudioContextClass();
+    void audioContext.resume();
+    const oscillator = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    const now = audioContext.currentTime;
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(kind === "ai" ? 520 : 390, now);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.055, now + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.13);
+    oscillator.connect(gain);
+    gain.connect(audioContext.destination);
+    oscillator.start(now);
+    oscillator.stop(now + 0.14);
+  }
+
+  syncVoiceButton();
+  voiceOutputBtn.addEventListener("click", () => {
+    voiceOutputEnabled = !voiceOutputEnabled;
+    localStorage.setItem("chess-teacher-voice", String(voiceOutputEnabled));
+    syncVoiceButton();
+    if (voiceOutputEnabled) {
+      playMoveSound("player");
+      speakCoach("Voice coaching is on. I will speak explanations and play a sound for each move.");
+    } else if ("speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+  });
+
+  const speechWindow = window as typeof window & {
+    SpeechRecognition?: SpeechRecognitionConstructor;
+    webkitSpeechRecognition?: SpeechRecognitionConstructor;
+  };
+  const SpeechRecognitionClass = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
+  if (!SpeechRecognitionClass) {
+    voiceInputBtn.title = "Voice input is not supported by this browser";
+    voiceInputBtn.disabled = true;
+    voiceInputBtn.textContent = "🎙 Unavailable";
+  } else {
+    voiceInputBtn.addEventListener("click", () => {
+      if (recognition) {
+        recognition.stop();
+        return;
+      }
+      recognition = new SpeechRecognitionClass();
+      recognition.continuous = false;
+      recognition.interimResults = false;
+      recognition.lang = navigator.language || "en-US";
+      recognition.onstart = () => {
+        voiceInputBtn.textContent = "⏺ Listening…";
+        voiceInputBtn.classList.add("active");
+      };
+      recognition.onresult = (event: any) => {
+        const transcript = event.results?.[0]?.[0]?.transcript?.trim();
+        if (transcript) {
+          chatInput.value = transcript;
+          void submitChat();
+        }
+      };
+      recognition.onerror = () => {
+        chatHint.textContent = "Voice input was not available; you can still type here.";
+      };
+      recognition.onend = () => {
+        recognition = null;
+        voiceInputBtn.textContent = "🎙 Talk";
+        voiceInputBtn.classList.remove("active");
+      };
+      recognition.start();
+    });
+  }
+
+  const chatActions = document.createElement("div");
+  chatActions.className = "chat-actions";
+  const chatHint = document.createElement("span");
+  chatHint.className = "chat-hint";
+  chatHint.textContent = "Board-aware · saved locally";
+  chatActions.appendChild(chatHint);
+  const chatSend = document.createElement("button");
+  chatSend.className = "chat-send";
+  chatSend.type = "submit";
+  chatSend.textContent = "Send";
+  chatActions.appendChild(chatSend);
+  chatComposer.appendChild(chatActions);
+  coachColumn.appendChild(chatComposer);
+
+  // This button configures the local Codex/ChatGPT subscription directly in
+  // the chat room. It deliberately does not open the hamburger menu, so the
+  // board and right panel do not jump while a login is being checked.
+  quickLoginBtn.addEventListener("click", async (event) => {
+    event.stopPropagation();
+    quickLoginBtn.disabled = true;
+    quickLoginBtn.textContent = "Connecting…";
+    try {
+      if (!providerPresets.some((preset) => preset.id === "codex")) {
+        await loadProviderSetup();
+      }
+      const codex = providerPresets.find((preset) => preset.id === "codex");
+      if (!codex) throw new Error("Codex login is not available on this server.");
+      if (codex.authenticated) {
+        const response = await configureProvider({ provider: "codex", model: codex.model });
+        activeProviderLabel = response.active.label;
+        syncAgentStatus?.(activeProviderLabel);
+        chatHint.textContent = `${response.active.label} active · AI directs opponent moves`;
+        quickLoginBtn.textContent = "ChatGPT active";
+      } else {
+        const response = await startProviderLogin("codex");
+        chatHint.textContent = response.message || "Finish ChatGPT login, then click here again.";
+        quickLoginBtn.textContent = "Finish ChatGPT login";
+      }
+    } catch (error) {
+      chatHint.textContent = error instanceof Error ? error.message : "ChatGPT login failed";
+      quickLoginBtn.textContent = "ChatGPT login";
+    } finally {
+      quickLoginBtn.disabled = false;
+    }
+  });
 
   // 2. Eval bar
   const evalBarWrap = document.createElement("div");
@@ -440,9 +1031,41 @@ function init() {
   evalBarWrap.appendChild(evalBarLabel);
 
   // 3. Board
+  const boardShell = document.createElement("div");
+  boardShell.className = "board-shell";
+  layout.appendChild(boardShell);
+
   const boardWrap = document.createElement("div");
   boardWrap.className = "board-wrap";
-  layout.appendChild(boardWrap);
+  boardShell.appendChild(boardWrap);
+
+  const boardControls = document.createElement("div");
+  boardControls.className = "board-controls";
+  const firstBtn = document.createElement("button");
+  firstBtn.className = "nav-btn";
+  firstBtn.type = "button";
+  firstBtn.textContent = "|‹";
+  firstBtn.title = "Go to start";
+  const backBtn = document.createElement("button");
+  backBtn.className = "nav-btn nav-btn-wide";
+  backBtn.type = "button";
+  backBtn.textContent = "← Back";
+  const plyCounter = document.createElement("span");
+  plyCounter.className = "ply-counter";
+  plyCounter.textContent = "Start";
+  const forwardBtn = document.createElement("button");
+  forwardBtn.className = "nav-btn nav-btn-wide";
+  forwardBtn.type = "button";
+  forwardBtn.textContent = "Forward →";
+  const lastBtn = document.createElement("button");
+  lastBtn.className = "nav-btn";
+  lastBtn.type = "button";
+  lastBtn.textContent = "›|";
+  lastBtn.title = "Go to latest move";
+  for (const control of [firstBtn, backBtn, plyCounter, forwardBtn, lastBtn]) {
+    boardControls.appendChild(control);
+  }
+  boardShell.appendChild(boardControls);
 
   // 4. Right panel
   const rightPanel = document.createElement("div");
@@ -455,63 +1078,91 @@ function init() {
   newGameBtn.textContent = "New Game";
   rightPanel.appendChild(newGameBtn);
 
-  // Skill Level
-  const skillLevelLabel = document.createElement("div");
-  skillLevelLabel.className = "section-label";
-  skillLevelLabel.textContent = "Skill Level";
-  rightPanel.appendChild(skillLevelLabel);
+  const evalControls = document.createElement("label");
+  evalControls.className = "eval-controls";
+  const evalToggle = document.createElement("input");
+  evalToggle.type = "checkbox";
+  evalToggle.checked = localStorage.getItem("chess-teacher-eval-bar") !== "false";
+  evalControls.appendChild(evalToggle);
+  evalControls.appendChild(document.createTextNode(" Evaluation bar"));
+  rightPanel.appendChild(evalControls);
 
-  const eloSelect = document.createElement("select");
-  eloSelect.className = "elo-select-main";
-  const eloOptions: [string, string][] = [
-    ["beginner", "Beginner (600-800)"],
-    ["intermediate", "Intermediate (800-1000)"],
-    ["advancing", "Advancing (1000-1200)"],
-    ["club", "Club (1200-1400)"],
-    ["competitive", "Competitive (1400+)"],
+  function setEvalBarEnabled(enabled: boolean) {
+    evalBarWrap.classList.toggle("disabled", !enabled);
+    localStorage.setItem("chess-teacher-eval-bar", String(enabled));
+  }
+  setEvalBarEnabled(evalToggle.checked);
+  evalToggle.addEventListener("change", () => setEvalBarEnabled(evalToggle.checked));
+
+  // Opponent rating controls the AI's target playing strength. The existing
+  // coaching profile is derived from this number for analysis depth.
+  const ratingLabel = document.createElement("div");
+  ratingLabel.className = "section-label";
+  ratingLabel.textContent = "Opponent rating";
+  rightPanel.appendChild(ratingLabel);
+
+  const ratingSelect = document.createElement("select");
+  ratingSelect.className = "elo-select-main";
+  ratingSelect.setAttribute("aria-label", "Opponent rating");
+  const ratingOptions: [string, string][] = [
+    ["1000", "1000"],
+    ["1200", "1200"],
+    ["2000", "2000"],
+    ["custom", "Custom rating…"],
   ];
-  for (const [value, label] of eloOptions) {
+  for (const [value, label] of ratingOptions) {
     const opt = document.createElement("option");
     opt.value = value;
     opt.textContent = label;
-    if (value === "intermediate") opt.selected = true;
-    eloSelect.appendChild(opt);
+    ratingSelect.appendChild(opt);
   }
-  rightPanel.appendChild(eloSelect);
+  rightPanel.appendChild(ratingSelect);
 
-  // Coach
-  const coachSelectLabel = document.createElement("div");
-  coachSelectLabel.className = "section-label";
-  coachSelectLabel.textContent = "Coach";
-  rightPanel.appendChild(coachSelectLabel);
+  const customRatingInput = document.createElement("input");
+  customRatingInput.type = "number";
+  customRatingInput.className = "rating-custom-input";
+  customRatingInput.min = "400";
+  customRatingInput.max = "3000";
+  customRatingInput.step = "1";
+  customRatingInput.placeholder = "Enter rating (400–3000)";
+  customRatingInput.setAttribute("aria-label", "Custom opponent rating");
+  rightPanel.appendChild(customRatingInput);
 
-  const coachSelect = document.createElement("select");
-  coachSelect.className = "elo-select-main";
-  const savedCoach = localStorage.getItem("chess-teacher-coach") || "Anna Cramling";
-  const coachOptions: [string, string][] = [
-    ["Anna Cramling", "Anna Cramling"],
-    ["Daniel Naroditsky", "Daniel Naroditsky"],
-    ["GothamChess", "GothamChess"],
-    ["GM Ben Finegold", "GM Ben Finegold"],
-    ["Hikaru", "Hikaru"],
-    ["Judit Polgar", "Judit Polgar"],
-    ["Magnus Carlsen", "Magnus Carlsen"],
-    ["Vishy Anand", "Vishy Anand"],
-    ["Garry Kasparov", "Garry Kasparov"],
-    ["Mikhail Botvinnik", "Mikhail Botvinnik"],
-    ["Paul Morphy", "Paul Morphy"],
-    ["Mikhail Tal", "Mikhail Tal"],
-    ["Jose Raul Capablanca", "Jose Raul Capablanca"],
-    ["Faustino Oro", "Faustino Oro"],
-  ];
-  for (const [value, label] of coachOptions) {
-    const opt = document.createElement("option");
-    opt.value = value;
-    opt.textContent = label;
-    if (value === savedCoach) opt.selected = true;
-    coachSelect.appendChild(opt);
+  function profileForRating(rating: number): string {
+    if (rating < 900) return "beginner";
+    if (rating < 1100) return "intermediate";
+    if (rating < 1300) return "advancing";
+    if (rating < 1600) return "club";
+    return "competitive";
   }
-  rightPanel.appendChild(coachSelect);
+
+  function clampRating(value: number): number {
+    return Math.max(400, Math.min(3000, Math.round(value)));
+  }
+
+  let opponentRating = clampRating(Number(localStorage.getItem("chess-teacher-opponent-rating") || 1200));
+
+  function setRatingControl(rating: number) {
+    opponentRating = clampRating(rating);
+    const preset = [1000, 1200, 2000].includes(opponentRating);
+    ratingSelect.value = preset ? String(opponentRating) : "custom";
+    customRatingInput.value = String(opponentRating);
+    customRatingInput.hidden = preset;
+  }
+  setRatingControl(opponentRating);
+
+  const agentStatus = document.createElement("div");
+  agentStatus.className = "opponent-agent-status";
+  syncAgentStatus = (label: string) => {
+    agentStatus.textContent = `${label} active · AI directs opponent moves`;
+    agentStatus.className = "opponent-agent-status ai-active";
+  };
+  if (activeProviderLabel) {
+    syncAgentStatus(activeProviderLabel);
+  } else {
+    agentStatus.textContent = "AI-directed opponent · connect a provider";
+  }
+  rightPanel.appendChild(agentStatus);
 
   // Game status
   const statusDisplay = document.createElement("div");
@@ -732,6 +1383,11 @@ function init() {
 
   // --- Ply change handler ---
   function onPlyChange(ply: number, maxPly: number) {
+    firstBtn.disabled = ply <= 0;
+    backBtn.disabled = ply <= 0;
+    forwardBtn.disabled = ply >= maxPly;
+    lastBtn.disabled = ply >= maxPly;
+    plyCounter.textContent = maxPly === 0 ? "Start" : `Move ${ply} / ${maxPly}`;
     const moveSpans = moveHistory.querySelectorAll(".move");
     moveSpans.forEach((span) => {
       const el = span as HTMLElement;
@@ -793,6 +1449,89 @@ function init() {
       .replace(/\*(.+?)\*/g, "<em>$1</em>");
   }
 
+  function addChatBubble(
+    role: "user" | "assistant",
+    text: string,
+    label?: string,
+    speak = role === "assistant",
+  ): HTMLDivElement {
+    const bubble = document.createElement("div");
+    bubble.className = `chat-message ${role}`;
+    const roleLabel = document.createElement("div");
+    roleLabel.className = "chat-role";
+    roleLabel.textContent = label || (role === "user" ? "You" : "Coach");
+    bubble.appendChild(roleLabel);
+    const body = document.createElement("div");
+    body.className = "chat-message-body";
+    body.innerHTML = parseSimpleMarkdown(text);
+    bubble.appendChild(body);
+    if (role === "assistant") bubble.appendChild(makeCopyButton(text));
+    coachMessages.appendChild(bubble);
+    coachMessages.scrollTop = coachMessages.scrollHeight;
+    if (speak) speakCoach(text);
+    return bubble;
+  }
+
+  function renderChatHistory(history: ChatMessage[]) {
+    coachMessages.innerHTML = "";
+    for (const entry of history) {
+      addChatBubble(entry.role, entry.text, undefined, false);
+    }
+  }
+
+  async function submitChat() {
+    const message = chatInput.value.trim();
+    if (!message || chatSend.disabled) return;
+    const sessionId = gc.getSessionId();
+    if (!sessionId) {
+      addChatBubble("assistant", "The game session is still starting. Try again in a moment.");
+      return;
+    }
+
+    chatInput.value = "";
+    addChatBubble("user", message);
+    const thinkingBubble = addChatBubble("assistant", "Thinking about the position…", undefined, false);
+    thinkingBubble.classList.add("typing");
+    chatSend.disabled = true;
+    chatInput.disabled = true;
+    try {
+      const response = await sendChat(
+        sessionId,
+        message,
+        gc.viewedFen(),
+        chatModeSelect.value as "fast" | "deep",
+      );
+      thinkingBubble.remove();
+      addChatBubble(
+        "assistant",
+        response.message,
+        response.source === "ai" ? "AI coach" : "AI unavailable",
+      );
+    } catch (error) {
+      thinkingBubble.remove();
+      const detail = error instanceof Error ? error.message : "Chat request failed";
+      addChatBubble("assistant", `I couldn't answer: ${detail}`);
+    } finally {
+      chatSend.disabled = false;
+      chatInput.disabled = false;
+      chatInput.focus();
+    }
+  }
+
+  chatComposer.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void submitChat();
+  });
+  chatInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      void submitChat();
+    }
+  });
+  chatModeSelect.addEventListener("change", () => {
+    localStorage.setItem("chess-teacher-response-mode", chatModeSelect.value);
+  });
+
   // --- Coaching display ---
   function showCoaching(coaching: CoachingData) {
     const debugEnabled = localStorage.getItem("chess-teacher-debug") === "true";
@@ -821,6 +1560,12 @@ function init() {
     const msg = document.createElement("div");
     msg.className = `coach-message ${coaching.quality}`;
     msg.innerHTML = parseSimpleMarkdown(coaching.message);
+    const sourceTag = document.createElement("span");
+    sourceTag.className = "coach-source";
+    sourceTag.textContent = coaching.source === "ai+stockfish"
+      ? "AI explanation · Stockfish facts"
+      : "Stockfish facts · local analysis";
+    msg.prepend(sourceTag);
     msg.dataset.ply = String(gc.getCurrentPly());
     msg.addEventListener("click", () => {
       const ply = parseInt(msg.dataset.ply!, 10);
@@ -829,6 +1574,7 @@ function init() {
     msg.appendChild(makeCopyButton(coaching.message));
     coachMessages.appendChild(msg);
     coachMessages.scrollTop = coachMessages.scrollHeight;
+    speakCoach(coaching.message);
 
     // Show eval bar when coaching fires
     evalBarWrap.classList.add("visible");
@@ -850,6 +1596,8 @@ function init() {
   // --- New game reset ---
   function resetUI() {
     gc.newGame().then(() => {
+      const sessionId = gc.getSessionId();
+      if (sessionId) localStorage.setItem("chess-teacher-session-id", sessionId);
       statusDisplay.textContent = "";
       statusDisplay.style.color = "#4ade80";
       evalDisplay.textContent = "Eval: \u2014";
@@ -858,7 +1606,7 @@ function init() {
       coachMessages.innerHTML = "";
       viewingIndicator.textContent = "";
       updateEvalBar(null, null);
-      evalBarWrap.classList.remove("visible");
+      setEvalBarEnabled(evalToggle.checked);
 
       // Update FEN display
       updateFenDisplay(gc.fen());
@@ -869,6 +1617,7 @@ function init() {
   const engine = new BrowserEngine();
 
   const board = createBoard(boardWrap, (orig, dest) => {
+    playMoveSound("player");
     gc.handleMove(orig, dest);
   });
 
@@ -883,12 +1632,54 @@ function init() {
   gc.setStatusCallback(showStatus);
   gc.setCoachingCallback(showCoaching);
   gc.setPlyChangeCallback(onPlyChange);
+  gc.setOpponentMoveCallback((san, method, reason) => {
+    if (!san) return;
+    playMoveSound("ai");
+    if (method === "llm") {
+      agentStatus.textContent = `AI played ${san} · Stockfish checked legality`;
+      agentStatus.className = "opponent-agent-status ai-active";
+      addChatBubble(
+        "assistant",
+        `I played **${san}**. ${reason || "It fits the opponent style and keeps the position challenging."}`,
+        "AI opponent",
+      );
+    } else {
+      agentStatus.textContent = `Stockfish fallback played ${san} · connect AI for directed play`;
+      agentStatus.className = "opponent-agent-status engine-fallback";
+      addChatBubble(
+        "assistant",
+        `The AI provider was unavailable, so the safety fallback played **${san}**. Connect the selected provider for directed opponent play.`,
+        "Engine fallback",
+      );
+    }
+  });
+
+  firstBtn.addEventListener("click", () => gc.jumpToPly(0));
+  backBtn.addEventListener("click", () => gc.stepBack());
+  forwardBtn.addEventListener("click", () => gc.stepForward());
+  lastBtn.addEventListener("click", () => gc.jumpToPly(gc.getMaxPly()));
+  onPlyChange(0, 0);
 
   // Initialize coach from localStorage before creating session
   gc.setCoachName(savedCoach);
+  gc.setOpponentRating(opponentRating);
 
-  // Create initial server session
-  gc.newGame();
+  // Resume the current local session across a browser refresh. The server
+  // keeps it in memory, so a full server restart intentionally starts fresh.
+  const savedSessionId = localStorage.getItem("chess-teacher-session-id");
+  void (async () => {
+    const restored = savedSessionId ? await gc.restoreGame(savedSessionId) : null;
+    if (restored) {
+      setRatingControl(restored.opponent_rating ?? 1200);
+      personaSelect.value = restored.coach_name;
+      renderChatHistory(restored.chat_history);
+      localStorage.setItem("chess-teacher-session-id", restored.session_id);
+    } else {
+      await gc.newGame();
+      const sessionId = gc.getSessionId();
+      if (sessionId) localStorage.setItem("chess-teacher-session-id", sessionId);
+    }
+  })();
 
   requestAnimationFrame(() => updateBoardColors());
 
@@ -927,16 +1718,38 @@ function init() {
     resetUI();
   });
 
-  // ELO select
-  eloSelect.addEventListener("change", () => {
-    gc.setEloProfile(eloSelect.value);
+  // Opponent rating select
+  ratingSelect.addEventListener("change", () => {
+    if (ratingSelect.value === "custom") {
+      customRatingInput.hidden = false;
+      customRatingInput.focus();
+      return;
+    }
+    setRatingControl(Number(ratingSelect.value));
+    localStorage.setItem("chess-teacher-opponent-rating", String(opponentRating));
+    gc.setOpponentRating(opponentRating);
+    gc.setEloProfile(profileForRating(opponentRating));
     resetUI();
   });
 
-  // Coach select
-  coachSelect.addEventListener("change", () => {
-    gc.setCoachName(coachSelect.value);
-    localStorage.setItem("chess-teacher-coach", coachSelect.value);
+  customRatingInput.addEventListener("change", () => {
+    const parsed = Number(customRatingInput.value);
+    if (!Number.isFinite(parsed)) {
+      setRatingControl(opponentRating);
+      return;
+    }
+    setRatingControl(parsed);
+    localStorage.setItem("chess-teacher-opponent-rating", String(opponentRating));
+    gc.setOpponentRating(opponentRating);
+    gc.setEloProfile(profileForRating(opponentRating));
+    resetUI();
+  });
+
+  // AI persona lives beside the conversation because it affects both coaching
+  // language and the opponent's teaching choices.
+  personaSelect.addEventListener("change", () => {
+    gc.setCoachName(personaSelect.value);
+    localStorage.setItem("chess-teacher-coach", personaSelect.value);
     resetUI();
   });
 
