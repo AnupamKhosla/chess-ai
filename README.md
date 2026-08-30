@@ -80,7 +80,7 @@ For deep architectural details, see [guide/DESIGN.md](guide/DESIGN.md).
 1. **Clone and enter the development environment:**
    ```bash
    git clone https://github.com/AnupamKhosla/chess-ai.git
-   cd chess-teacher
+   cd chess-ai
    nix develop  # or use direnv if .envrc is configured
    ```
 
