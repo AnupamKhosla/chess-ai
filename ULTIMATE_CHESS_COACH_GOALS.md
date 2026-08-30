@@ -12,14 +12,15 @@ The player can type or speak naturally:
 > pressure me with gambits, and teach me what I should check before every move.”
 
 The application understands that intent, configures a lesson, plays legal
-moves automatically, explains plans in plain English, and lets the player
+moves on request, explains plans in plain English, and lets the player
 review the position visually.
 
 ## Non-negotiable experience
 
 - One browser page contains the board, evaluation, move list, coach chat, and
   controls.
-- Player moves are answered automatically; no “press reply” step.
+- Player moves are reviewed immediately, then a clear **Make AI move** action
+  asks the selected AI to play. The action shows “AI thinking…” while busy.
 - Chat is continuous within each game and resumes after browser or server
   restart from the local session archive.
 - Back, Forward, first-position, and latest-position navigation sits directly
@@ -34,11 +35,12 @@ review the position visually.
 
 ## Intelligence contract
 
-### Stockfish is the chess authority
+### Stockfish is an analysis authority, never the player
 
-Stockfish and coded analysis decide legality, evaluation, tactics, candidate
-moves, and concrete variations. The language model must not invent a pin,
-fork, evaluation, or legal move.
+Stockfish and coded analysis provide evaluation, tactics, candidate hints, and
+concrete variations. The selected AI must choose the opponent's move. If the
+language model is unavailable or invalid, the built-in local AI policy may
+choose it; Stockfish must never do so.
 
 Every coach intervention should make its source clear:
 
@@ -46,8 +48,9 @@ Every coach intervention should make its source clear:
   analyzer output.
 - **AI explanation · Stockfish facts** — language model wording grounded in
   those facts.
-- **AI unavailable** — the conversation provider could not answer; the board
-  and engine still work.
+- **Free local AI** — instant, no-key opponent and board-aware template coach.
+- **AI unavailable** — a connected provider could not answer; no engine move is
+  substituted silently.
 
 ### Human-like teaching
 
@@ -77,6 +80,7 @@ An AI lesson action should:
 
 The UI should support the most practical local setups behind one adapter:
 
+- Built-in free local AI policy and board-aware coach with no key or network;
 - DeepSeek, OpenAI, Anthropic, and OpenRouter API keys;
 - Ollama and LM Studio local OpenAI-compatible servers;
 - ChatGPT/Codex login through an installed authenticated Codex CLI;
@@ -102,8 +106,9 @@ FastAPI local server
        └── selected language model or authenticated local CLI
 ```
 
-The server remains useful with no language model: moves, engine evaluation,
-local analysis, navigation, and deterministic coaching continue to work.
+The server remains useful with no language model: the no-key local AI makes
+legal opponent moves, engine evaluation and local analysis remain available,
+and navigation/coaching continue to work.
 
 ## Delivery sequence
 

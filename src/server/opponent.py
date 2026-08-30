@@ -15,6 +15,7 @@ from server.analysis import GamePhase, analyze, detect_game_phase
 from server.descriptions import describe_position_from_report
 from server.engine import EngineProtocol, MoveInfo
 from server.llm import ChessTeacher, OpponentMoveContext
+from server.local_ai import choose_local_move
 
 
 # Centipawn thresholds per phase — moves within this delta of the best
@@ -35,7 +36,16 @@ class OpponentMoveResult:
     san: str
     phase: GamePhase
     reason: str | None = None   # LLM's rationale (for logging)
-    method: str = "engine"      # "llm" or "engine"
+    method: str = "local"       # "llm" or "local"
+
+
+class AIUnavailableError(RuntimeError):
+    """Raised when no AI can choose the opponent's move.
+
+    Stockfish is intentionally not an allowed recovery path.  The built-in
+    local policy is normally available, but this error keeps the game stopped
+    rather than ever making an engine move if that policy is unavailable.
+    """
 
 
 def _cp_threshold(phase: GamePhase) -> int:
@@ -87,92 +97,106 @@ async def select_opponent_move(
     playing_style: str = "balanced",
     persona: str = "Anna Cramling",
 ) -> OpponentMoveResult:
-    """Select an opponent move using AI direction plus engine guardrails.
+    """Select an opponent move. Stockfish can advise, never play.
 
-    Stockfish supplies analysis hints and a safe fallback. When a teacher
-    provider is configured, the AI chooses the actual move from the full legal
-    move list using the requested rating, style, and persona. This means the
-    AI is the player; Stockfish is the legality/strength guardrail. A fallback
-    is used only when the AI is unavailable or precision leaves no choice.
+    A connected language model gets first choice. If it is unavailable or
+    returns invalid SAN, the no-key local policy chooses a legal move. That
+    policy is deliberately separate from Stockfish, so an AI failure can never
+    turn into a silent engine move.
     """
     fen = board.fen()
     phase = detect_game_phase(board)
+    legal_moves = list(board.legal_moves)
+    if not legal_moves:
+        raise AIUnavailableError("The position has no legal opponent move.")
 
-    candidates = await engine.best_moves(fen, n=CANDIDATE_COUNT, depth=SELECTION_DEPTH)
-    if not candidates:
-        raise RuntimeError("Engine returned no moves")
+    # The built-in provider is intentionally immediate and does not make a
+    # network or Stockfish call. It is the default guest AI for a fresh
+    # installation.
+    provider_id = "local"
+    if teacher is not None:
+        # Real ChessTeacher exposes a synchronous provider_info() method. Keep
+        # unit-test doubles and lightweight adapters safe without awaiting a
+        # mock coroutine here.
+        config = getattr(teacher, "_config", None)
+        configured_id = getattr(config, "provider", None)
+        provider_id = configured_id if isinstance(configured_id, str) else "remote"
+
+    # These are hints for the conversational model only. An engine outage
+    # must not prevent the free local player from responding.
+    if provider_id == "local":
+        candidates = []
+    else:
+        try:
+            candidates = await engine.best_moves(fen, n=CANDIDATE_COUNT, depth=SELECTION_DEPTH)
+        except Exception as exc:  # pragma: no cover - depends on external engine
+            logger.warning("Stockfish hints unavailable for AI move: %s", exc)
+            candidates = []
 
     filtered = filter_candidates(candidates, phase)
-    best = filtered[0]
 
-    def _make_result(move_info: MoveInfo, method: str = "engine", reason: str | None = None):
-        move_obj = chess.Move.from_uci(move_info.uci)
+    def _make_result(move_obj: chess.Move, method: str, reason: str | None = None):
         return OpponentMoveResult(
-            uci=move_info.uci,
+            uci=move_obj.uci(),
             san=board.san(move_obj),
             phase=phase,
             reason=reason,
             method=method,
         )
 
-    # Skip LLM for: single candidate, no teacher, or endgame precision
-    if len(filtered) <= 1 or teacher is None or phase == GamePhase.ENDGAME:
-        return _make_result(best)
+    if teacher is None or provider_id == "local":
+        local = choose_local_move(
+            board, opponent_rating=opponent_rating, playing_style=playing_style
+        )
+        return _make_result(
+            chess.Move.from_uci(local.uci), method="local", reason=local.reason
+        )
 
     # Build context for LLM selection. The AI sees every legal move, not just
-    # Stockfish's shortlist, so it can play a human-like teaching move rather
-    # than merely rubber-stamping the engine's first line.
-    report = analyze(board)
-    student_is_white = board.turn != chess.WHITE  # student is the side NOT about to move
-    pos_desc = describe_position_from_report(report, student_is_white)
-    summary = pos_desc.as_text()
+    # Stockfish's shortlist, so it can choose a teaching move rather than
+    # rubber-stamping the engine's first line.
+    try:
+        report = analyze(board)
+        student_is_white = board.turn != chess.WHITE
+        pos_desc = describe_position_from_report(report, student_is_white)
+        summary = pos_desc.as_text()
+        player_color = "White" if board.turn == chess.BLACK else "Black"
+        candidate_dicts = [
+            {"san": board.san(chess.Move.from_uci(m.uci)), "uci": m.uci, "score_cp": m.score_cp}
+            for m in filtered
+        ]
+        ctx = OpponentMoveContext(
+            fen=fen,
+            game_phase=phase.value,
+            position_summary=summary,
+            candidates=candidate_dicts,
+            player_color=player_color,
+            opponent_rating=opponent_rating,
+            playing_style=playing_style,
+            persona=persona,
+            legal_moves=[board.san(move) for move in legal_moves],
+        )
+        result = await teacher.select_teaching_move(ctx)
+    except Exception as exc:  # provider failures are recovered by local AI
+        logger.warning("Configured AI opponent failed: %s", exc)
+        result = None
 
-    # Determine player color (opponent is the other side)
-    player_color = "White" if board.turn == chess.BLACK else "Black"
-
-    legal_moves = list(board.legal_moves)
-    candidate_dicts = [
-        {"san": board.san(chess.Move.from_uci(m.uci)), "uci": m.uci, "score_cp": m.score_cp}
-        for m in filtered
-    ]
-
-    ctx = OpponentMoveContext(
-        fen=fen,
-        game_phase=phase.value,
-        position_summary=summary,
-        candidates=candidate_dicts,
-        player_color=player_color,
-        opponent_rating=opponent_rating,
-        playing_style=playing_style,
-        persona=persona,
-        legal_moves=[board.san(move) for move in legal_moves],
-    )
-
-    result = await teacher.select_teaching_move(ctx)
-    if result is not None:
+    if isinstance(result, (tuple, list)) and len(result) >= 2:
         selected_san, reason = result
-        # Validate the AI's answer against the live board. SAN punctuation is
-        # normalized for tolerant parsing, but no unvalidated move can pass.
         normalized = selected_san.strip().replace("0-0-0", "O-O-O").replace("0-0", "O-O")
         normalized = normalized.rstrip("!?+#")
         for move_obj in legal_moves:
             legal_san = board.san(move_obj)
-            if legal_san.rstrip("!?+#") == normalized:
-                return _make_result(
-                    MoveInfo(uci=move_obj.uci(), score_cp=None, score_mate=None),
-                    method="llm",
-                    reason=reason,
-                )
-            if move_obj.uci() == selected_san.strip():
-                return _make_result(
-                    MoveInfo(uci=move_obj.uci(), score_cp=None, score_mate=None),
-                    method="llm",
-                    reason=reason,
-                )
+            if legal_san.rstrip("!?+#") == normalized or move_obj.uci() == selected_san.strip():
+                return _make_result(move_obj, method="llm", reason=reason)
 
-    # Fallback: top engine move
+    # The recovery path is another AI (the no-key local policy), never
+    # Stockfish. This keeps the game playable while making the source visible.
     logger.info(
-        "AI opponent unavailable or declined a candidate; using Stockfish fallback "
+        "Configured AI was unavailable or invalid; using the no-key local AI "
         "(rating=%s, style=%s)", opponent_rating, playing_style,
     )
-    return _make_result(best)
+    local = choose_local_move(
+        board, opponent_rating=opponent_rating, playing_style=playing_style
+    )
+    return _make_result(chess.Move.from_uci(local.uci), method="local", reason=local.reason)

@@ -39,6 +39,12 @@ class ProviderPreset:
 
 PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
     ProviderPreset(
+        "local", "Free local AI (no key)", "builtin",
+        "", "local-policy-v1", False,
+        help="Instant guest mode: a built-in legal chess policy and board-aware coach. No API key, login, or network required.",
+        effort_options=("auto",),
+    ),
+    ProviderPreset(
         "deepseek", "DeepSeek API key", "openai-compatible",
         "https://api.deepseek.com", "deepseek-v4-flash", True,
         help="Paste a DeepSeek API key. V4 Flash is the fast default; V4 Pro is the deeper option.",
@@ -93,10 +99,10 @@ _PRESETS = {preset.id: preset for preset in PROVIDER_PRESETS}
 
 @dataclass
 class ProviderConfig:
-    provider: str = "ollama"
-    kind: str = "openai-compatible"
-    base_url: str = "http://127.0.0.1:11434"
-    model: str = "llama3.2"
+    provider: str = "local"
+    kind: str = "builtin"
+    base_url: str = ""
+    model: str = "local-policy-v1"
     api_key: str | None = None
     effort: str = "auto"
 
@@ -373,6 +379,8 @@ async def chat_with_provider(
     coaching still works when the language model is unavailable.
     """
     try:
+        if config.kind == "builtin":
+            return None
         if config.kind == "anthropic":
             return await _anthropic(config, messages, timeout)
         if config.kind in {"codex-cli", "claude-cli"}:

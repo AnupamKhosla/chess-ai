@@ -9,12 +9,13 @@ from dataclasses import dataclass, field
 import chess
 
 from server.analysis import analyze
-from server.coach import Arrow, assess_move
+from server.coach import Arrow, CoachingResponse, MoveQuality, assess_move
 from server.elo_profiles import get_profile
 from server.engine import EngineProtocol
 from server.game_tree import build_coaching_tree
 from server.knowledge import query_knowledge
 from server.llm import ChessTeacher
+from server.local_ai import local_coach_reply
 from server.opponent import select_opponent_move
 from server.rag import ChessRAG
 from server.report import serialize_report
@@ -234,7 +235,17 @@ class GameManager:
                 logger.warning("Ignoring invalid viewed FEN for chat")
 
         response: str | None = None
-        if self._teacher is not None:
+        response_source = "unavailable"
+        provider_id = (
+            self._teacher.provider_info().get("provider")
+            if self._teacher is not None else "local"
+        )
+        if provider_id == "local":
+            response = local_coach_reply(
+                message, state.board, opponent_rating=state.opponent_rating
+            )
+            response_source = "local"
+        elif self._teacher is not None:
             response = await self._teacher.chat_conversation(
                 message=message,
                 history=list(state.chat_history),
@@ -247,13 +258,13 @@ class GameManager:
                 playing_style=state.opponent_style,
                 response_mode=response_mode if response_mode in {"fast", "deep"} else "fast",
             )
-        answered_by_ai = bool(response)
+            if response:
+                response_source = "ai"
         if not response:
-            response = (
-                "I can keep the position and conversation, but the selected AI "
-                "provider is not reachable yet. Configure a key or local model "
-                "under AI setup, then send your question again."
+            response = local_coach_reply(
+                message, state.board, opponent_rating=state.opponent_rating
             )
+            response_source = "local"
 
         state.chat_history.extend([
             {"role": "user", "text": message},
@@ -263,7 +274,7 @@ class GameManager:
         self._persist(session_id, state)
         return {
             "message": response,
-            "source": "ai" if answered_by_ai else "unavailable",
+            "source": response_source,
             "provider": self._teacher.provider_info() if self._teacher else None,
             "chat_history": state.chat_history,
         }
@@ -334,15 +345,44 @@ class GameManager:
                 coaching_data.message = llm_message
                 coaching_data.source = "ai+stockfish"
 
+    @staticmethod
+    def _coaching_dict(coaching_data: CoachingResponse | None) -> dict | None:
+        if coaching_data is None:
+            return None
+        return {
+            "quality": coaching_data.quality.value,
+            "message": coaching_data.message,
+            "arrows": [
+                {"orig": a.orig, "dest": a.dest, "brush": a.brush}
+                for a in coaching_data.arrows
+            ],
+            "highlights": [
+                {"square": h.square, "brush": h.brush}
+                for h in coaching_data.highlights
+            ],
+            "severity": coaching_data.severity,
+            "debug_prompt": coaching_data.debug_prompt,
+            "source": coaching_data.source,
+        }
+
     async def make_move(
         self, session_id: str, move_uci: str, verbosity: str = "normal",
     ) -> dict:
-        """Apply player move, get Stockfish response, return result dict."""
+        """Apply and review the player's move, then wait for the AI action.
+
+        The opponent is intentionally not moved here. The separate
+        :meth:`make_ai_move` endpoint is the only game path that applies a
+        computer move. This makes the turn visible and prevents Stockfish from
+        ever being mistaken for the player.
+        """
         state = self._sessions.get(session_id)
         if state is None:
             raise KeyError(f"Session not found: {session_id}")
 
         board = state.board
+
+        if board.turn != chess.WHITE:
+            raise ValueError("It is the AI's turn. Press 'Make AI move' first.")
 
         try:
             move = chess.Move.from_uci(move_uci)
@@ -380,6 +420,25 @@ class GameManager:
                 best_move_uci=best_move_uci,
             )
 
+        # The old coach stayed silent on routine moves. The product now
+        # promises a review of every move, so create a neutral coaching record
+        # that still goes through the AI explanation pipeline.
+        if coaching_data is None:
+            best_san = "an alternative"
+            if best_move_uci is not None:
+                try:
+                    best_san = board_before.san(chess.Move.from_uci(best_move_uci))
+                except (ValueError, chess.IllegalMoveError):
+                    pass
+            coaching_data = CoachingResponse(
+                quality=MoveQuality.GOOD,
+                message=(
+                    f"{player_san} is a sound move. A human player would now check "
+                    f"the opponent's forcing replies and compare the plan with {best_san}."
+                ),
+                source="local-ai+stockfish",
+            )
+
         # Enrich coaching with two-pass pipeline + RAG + LLM (timeout so game never freezes).
         if coaching_data is not None:
             try:
@@ -395,23 +454,7 @@ class GameManager:
             except asyncio.TimeoutError:
                 logging.getLogger(__name__).warning("Coaching enrichment timed out")
 
-        coaching_dict = None
-        if coaching_data is not None:
-            coaching_dict = {
-                "quality": coaching_data.quality.value,
-                "message": coaching_data.message,
-                "arrows": [
-                    {"orig": a.orig, "dest": a.dest, "brush": a.brush}
-                    for a in coaching_data.arrows
-                ],
-                "highlights": [
-                    {"square": h.square, "brush": h.brush}
-                    for h in coaching_data.highlights
-                ],
-                "severity": coaching_data.severity,
-                "debug_prompt": coaching_data.debug_prompt,
-                "source": coaching_data.source,
-            }
+        coaching_dict = self._coaching_dict(coaching_data)
 
         status = _game_status(board)
         if status != "playing":
@@ -423,9 +466,55 @@ class GameManager:
                 "status": status,
                 "result": _game_result(board),
                 "coaching": coaching_dict,
+                "ai_turn": False,
             }
             self._persist(session_id, state)
             return result
+
+        # Persist immediately. If AI is unavailable, the player move and its
+        # review survive and the browser can retry the AI action safely.
+        self._persist(session_id, state)
+        return {
+            "fen": board.fen(),
+            "player_move_san": player_san,
+            "opponent_move_uci": None,
+            "opponent_move_san": None,
+            "opponent_move_method": None,
+            "opponent_move_reason": None,
+            "status": status,
+            "result": _game_result(board),
+            "coaching": coaching_dict,
+            "ai_turn": True,
+        }
+
+    async def make_ai_move(self, session_id: str) -> dict:
+        """Ask the configured AI/local policy to make exactly one move.
+
+        Stockfish is passed as an analysis provider only. The selected move is
+        always returned by the configured language model or the built-in local
+        AI policy, and never by Stockfish.
+        """
+        state = self._sessions.get(session_id)
+        if state is None:
+            raise KeyError(f"Session not found: {session_id}")
+
+        board = state.board
+        if board.turn == chess.WHITE:
+            raise ValueError("It is the player's turn; make a move first.")
+        status = _game_status(board)
+        if status != "playing":
+            return {
+                "fen": board.fen(),
+                "player_move_san": "",
+                "opponent_move_uci": None,
+                "opponent_move_san": None,
+                "opponent_move_method": None,
+                "opponent_move_reason": None,
+                "status": status,
+                "result": _game_result(board),
+                "coaching": None,
+                "ai_turn": False,
+            }
 
         selection = await select_opponent_move(
             board,
@@ -441,14 +530,15 @@ class GameManager:
         status = _game_status(board)
         result = {
             "fen": board.fen(),
-            "player_move_san": player_san,
+            "player_move_san": "",
             "opponent_move_uci": selection.uci,
             "opponent_move_san": selection.san,
             "opponent_move_method": selection.method,
             "opponent_move_reason": selection.reason,
             "status": status,
             "result": _game_result(board),
-            "coaching": coaching_dict,
+            "coaching": None,
+            "ai_turn": status == "playing" and board.turn == chess.BLACK,
         }
         self._persist(session_id, state)
         return result

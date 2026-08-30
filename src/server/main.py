@@ -34,6 +34,7 @@ from server.import_puzzles import (
 )
 from server.knowledge import seed_knowledge_base
 from server.llm import ChessTeacher
+from server.opponent import AIUnavailableError
 from server.puzzles import PuzzleDB
 from server.providers import cli_auth_status, preset_for, provider_catalog, start_cli_login
 from server.rag import ChessRAG
@@ -233,6 +234,10 @@ class MoveRequest(BaseModel):
     verbosity: str = "normal"
 
 
+class AIMoveRequest(BaseModel):
+    session_id: str
+
+
 class ChatRequest(BaseModel):
     session_id: str
     message: str
@@ -299,7 +304,7 @@ async def configure_provider(req: ProviderUpdateRequest):
     effort = (req.effort if req.effort is not None else "auto").strip().lower()
     if effort not in preset.effort_options:
         raise HTTPException(status_code=400, detail=f"Unsupported reasoning effort for {preset.label}: {effort}")
-    if preset.kind not in {"codex-cli", "claude-cli"} and not base_url:
+    if preset.kind not in {"codex-cli", "claude-cli", "builtin"} and not base_url:
         raise HTTPException(status_code=400, detail="Base URL is required for this provider")
     if not model:
         raise HTTPException(status_code=400, detail="Model is required")
@@ -398,6 +403,26 @@ async def game_move(req: MoveRequest):
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
     return result
+
+
+@app.post("/api/game/ai-move")
+async def game_ai_move(req: AIMoveRequest):
+    """Ask the AI to make the pending opponent move.
+
+    This endpoint deliberately has no Stockfish fallback. Stockfish remains an
+    analysis/legality reference only; the result must come from a language
+    model or the built-in no-key local AI policy.
+    """
+    try:
+        return await games.make_ai_move(req.session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Session not found")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except AIUnavailableError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 @app.post("/api/game/chat")

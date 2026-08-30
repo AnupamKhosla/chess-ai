@@ -74,7 +74,7 @@ export interface CoachingData {
   highlights: HighlightData[];
   severity: string;
   debug_prompt?: string;
-  source?: "stockfish" | "ai+stockfish";
+  source?: "stockfish" | "ai+stockfish" | "local-ai+stockfish";
 }
 
 export interface MoveResponse {
@@ -82,11 +82,12 @@ export interface MoveResponse {
   player_move_san: string;
   opponent_move_uci: string | null;
   opponent_move_san: string | null;
-  opponent_move_method?: "llm" | "engine" | null;
+  opponent_move_method?: "llm" | "local" | "engine" | null;
   opponent_move_reason?: string | null;
   status: string;
   result: string | null;
   coaching: CoachingData | null;
+  ai_turn?: boolean;
 }
 
 const API_BASE = "/api";
@@ -138,6 +139,27 @@ export async function sendMove(
   }
 }
 
+/** Ask the selected AI to play the pending opponent turn. */
+export async function requestAiMove(sessionId: string): Promise<MoveResponse> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 45_000);
+  try {
+    const res = await fetch(`${API_BASE}/game/ai-move`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({ detail: "AI move failed" }));
+      throw new Error(detail.detail || `AI move failed: ${res.status}`);
+    }
+    return res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function getGameState(sessionId: string): Promise<GameStateResponse> {
   const res = await fetch(`${API_BASE}/game/${encodeURIComponent(sessionId)}`);
   if (!res.ok) throw new Error(`Failed to restore game: ${res.status}`);
@@ -149,7 +171,7 @@ export async function sendChat(
   message: string,
   viewedFen?: string,
   responseMode: "fast" | "deep" = "fast",
-): Promise<{ message: string; source: "ai" | "unavailable"; provider: ProviderInfo | null; chat_history: ChatMessage[] }> {
+): Promise<{ message: string; source: "ai" | "local" | "unavailable"; provider: ProviderInfo | null; chat_history: ChatMessage[] }> {
   const res = await fetch(`${API_BASE}/game/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

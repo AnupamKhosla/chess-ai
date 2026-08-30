@@ -18,11 +18,11 @@ class Settings(BaseSettings):
     )
 
     # LLM (OpenAI-compatible — works with Ollama, OpenRouter, litellm, etc.)
-    # Ollama is the no-login local default. Hosted providers can be selected
-    # from the browser's AI setup menu.
-    llm_provider: str = "ollama"
-    llm_base_url: str = "http://127.0.0.1:11434"
-    llm_model: str = "llama3.2"
+    # The built-in local policy is the instant no-login default. Hosted and
+    # local model providers can be selected from the browser's AI setup menu.
+    llm_provider: str = "local"
+    llm_base_url: str = ""
+    llm_model: str = "local-policy-v1"
     llm_api_key: str | None = None
     llm_timeout: float = 30.0
     llm_effort: str = "auto"

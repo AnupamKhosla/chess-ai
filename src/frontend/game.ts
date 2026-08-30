@@ -6,6 +6,7 @@ import { BrowserEngine, EvalCallback, MultiPVCallback } from "./eval";
 import {
   createGame,
   getGameState,
+  requestAiMove,
   sendMove,
   MoveResponse,
   CoachingData,
@@ -32,12 +33,19 @@ export type CoachingCallback = (coaching: CoachingData) => void;
 /** Callback when the viewed ply changes (for UI navigation state). */
 export type PlyChangeCallback = (ply: number, maxPly: number) => void;
 
-/** Callback after the AI/engine has replied to the player's move. */
+/** Callback after the AI has replied to the player's move. */
 export type OpponentMoveCallback = (
   san: string,
-  method: "llm" | "engine" | null,
+  method: "llm" | "local" | "engine" | null,
   reason?: string | null,
 ) => void;
+
+/** Callback describing whether the explicit AI move action is available. */
+export type AiTurnCallback = (state: {
+  awaiting: boolean;
+  thinking: boolean;
+  error?: string | null;
+}) => void;
 
 /**
  * Compute chessground-compatible legal destinations from a chess.js instance.
@@ -82,7 +90,9 @@ export class GameController {
   private onPlyChange: PlyChangeCallback | null = null;
   private onMultiPV: MultiPVCallback | null = null;
   private onOpponentMove: OpponentMoveCallback | null = null;
+  private onAiTurn: AiTurnCallback | null = null;
   private thinking = false;
+  private awaitingAiMove = false;
   private currentPly = 0;
   private maxPly = 0;
   private coachingByPly: Map<number, CoachingData> = new Map();
@@ -137,6 +147,11 @@ export class GameController {
     this.onOpponentMove = cb;
   }
 
+  /** Register a callback for the explicit AI-turn button. */
+  setAiTurnCallback(cb: AiTurnCallback): void {
+    this.onAiTurn = cb;
+  }
+
   /** Set ELO profile for coaching depth/style. */
   setEloProfile(profile: string): void {
     this.eloProfile = profile;
@@ -155,10 +170,10 @@ export class GameController {
 
   /**
    * Handle a move made on the board. Called from chessground's after callback.
-   * Sends move to server, receives opponent response, applies it.
+   * Sends the move to the server for review and leaves the AI turn pending.
    */
   async handleMove(orig: Key, dest: Key): Promise<boolean> {
-    if (this.thinking) return false;
+    if (this.thinking || this.awaitingAiMove) return false;
     this.clearCoaching();
 
     // Check if this is a promotion
@@ -206,22 +221,59 @@ export class GameController {
       return true;
     }
 
-    // Send to server and get opponent response
+    // Send the move for review. The server intentionally does not move the
+    // opponent here; the user must explicitly ask the AI to play.
     this.setThinking(true);
     try {
       const verbosity = localStorage.getItem("chess-teacher-verbosity") || "normal";
       const resp = await sendMove(this.sessionId, moveUci, verbosity);
       this.handleCoaching(resp.coaching);
-      this.applyOpponentMove(resp);
+      this.awaitingAiMove = resp.ai_turn !== false && !resp.opponent_move_uci;
+      this.onAiTurn?.({ awaiting: this.awaitingAiMove, thinking: false });
     } catch (err) {
       console.error("Server move failed:", err);
-      // Game continues locally — graceful degradation
+      this.onAiTurn?.({
+        awaiting: false,
+        thinking: false,
+        error: err instanceof Error ? err.message : "Move review failed",
+      });
     } finally {
       this.setThinking(false);
     }
 
     this.updateEval();
     return true;
+  }
+
+  /** Ask the configured AI/local player to make the pending black move. */
+  async requestAiMove(): Promise<boolean> {
+    if (this.thinking || !this.awaitingAiMove || !this.sessionId) return false;
+    this.setThinking(true);
+    this.onAiTurn?.({ awaiting: true, thinking: true });
+    try {
+      const resp = await requestAiMove(this.sessionId);
+      if (resp.opponent_move_method === "engine") {
+        // Defense in depth for stale servers or a malformed response: the
+        // browser will not render an engine-only move as the AI's move.
+        this.onOpponentMove?.(resp.opponent_move_san || "", "engine", resp.opponent_move_reason);
+        throw new Error("Engine-only moves are disabled; no opponent move was made.");
+      }
+      this.applyOpponentMove(resp);
+      this.awaitingAiMove = false;
+      this.onAiTurn?.({ awaiting: false, thinking: false });
+      this.updateEval();
+      return Boolean(resp.opponent_move_uci);
+    } catch (err) {
+      console.error("AI move failed:", err);
+      this.onAiTurn?.({
+        awaiting: true,
+        thinking: false,
+        error: err instanceof Error ? err.message : "AI move failed",
+      });
+      return false;
+    } finally {
+      this.setThinking(false);
+    }
   }
 
   /** Reset to starting position and create a server session. */
@@ -233,6 +285,7 @@ export class GameController {
     this.game = new Chess();
     this.playerColor = "w";
     this.thinking = false;
+    this.awaitingAiMove = false;
     this.currentPly = 0;
     this.maxPly = 0;
     this.coachingByPly.clear();
@@ -266,6 +319,7 @@ export class GameController {
       this.opponentRating = state.opponent_rating ?? 1200;
       this.coachName = state.coach_name;
       this.thinking = false;
+      this.awaitingAiMove = restored.turn() === "b";
       this.currentPly = state.moves.length;
       this.maxPly = state.moves.length;
       this.coachingByPly.clear();
@@ -274,6 +328,7 @@ export class GameController {
       this.notifyMoveList();
       this.notifyPlyChange();
       this.updateEval();
+      this.onAiTurn?.({ awaiting: this.awaitingAiMove, thinking: false });
       return state;
     } catch {
       return null;
@@ -292,9 +347,11 @@ export class GameController {
     } catch {
       return false;
     }
+    this.awaitingAiMove = this.game.turn() === "b";
     this.syncBoard();
     this.notifyMoveList();
     this.updateEval();
+    this.onAiTurn?.({ awaiting: this.awaitingAiMove, thinking: false });
     return true;
   }
 
@@ -430,8 +487,8 @@ export class GameController {
       fen: this.game.fen(),
       turnColor,
       movable: {
-        color: isPlayerTurn && !this.thinking ? toColor(this.playerColor) : undefined,
-        dests: isPlayerTurn && !this.thinking ? legalDests(this.game) : new Map(),
+        color: isPlayerTurn && !this.thinking && !this.awaitingAiMove ? toColor(this.playerColor) : undefined,
+        dests: isPlayerTurn && !this.thinking && !this.awaitingAiMove ? legalDests(this.game) : new Map(),
       },
       lastMove: this.getLastMove(),
       check: this.game.isCheck() ? turnColor : undefined,
@@ -506,7 +563,7 @@ export class GameController {
     this.notifyPlyChange();
     this.onOpponentMove?.(
       resp.opponent_move_san || "",
-      resp.opponent_move_method ?? "engine",
+      resp.opponent_move_method ?? "local",
       resp.opponent_move_reason ?? null,
     );
 

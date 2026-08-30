@@ -37,11 +37,20 @@ test.describe("Chess Game E2E", () => {
     await expect(page.locator("cg-board")).toBeVisible();
 
     // Panel elements are present
-    await expect(page.locator(".panel")).toBeVisible();
+    await expect(page.locator(".right-panel")).toBeVisible();
     await expect(page.locator(".game-status")).toBeVisible();
     await expect(page.locator(".eval-display")).toBeVisible();
     await expect(page.locator(".move-history")).toBeVisible();
-    await expect(page.locator(".controls button")).toBeVisible();
+    await expect(page.locator(".board-controls button").first()).toBeVisible();
+    await expect(page.locator(".ai-move-btn")).toBeDisabled();
+  });
+
+  test("right analysis sidebar can be closed and reopened", async ({ page }) => {
+    await expect(page.locator(".right-panel")).toBeVisible();
+    await page.click(".close-panel-btn");
+    await expect(page.locator(".right-panel")).toBeHidden();
+    await page.click(".sidebar-toggle-btn");
+    await expect(page.locator(".right-panel")).toBeVisible();
   });
 
   test("make a move and opponent responds", async ({ page }) => {
@@ -57,8 +66,9 @@ test.describe("Chess Game E2E", () => {
       timeout: 5000,
     });
 
-    // Wait for opponent to respond (move history gets a second move)
-    // The opponent move appears after the server responds
+    await expect(page.locator(".ai-move-btn")).toBeEnabled({ timeout: 10_000 });
+    await page.click(".ai-move-btn");
+    // The AI move appears only after the explicit action.
     await expect(page.locator(".move-history .move")).toHaveCount(2, {
       timeout: 10_000,
     });
@@ -71,7 +81,11 @@ test.describe("Chess Game E2E", () => {
     await clickSquare(page, "e2");
     await clickSquare(page, "e4");
 
-    // Wait for opponent response
+    // Wait for the review, then ask the AI to play.
+    await expect(page.locator(".ai-move-btn")).toBeEnabled({
+      timeout: 10_000,
+    });
+    await page.click(".ai-move-btn");
     await expect(page.locator(".move-history .move")).toHaveCount(2, {
       timeout: 10_000,
     });
@@ -83,6 +97,8 @@ test.describe("Chess Game E2E", () => {
     await clickSquare(page, "d4");
 
     // Wait for move 2 to complete with opponent response
+    await expect(page.locator(".ai-move-btn")).toBeEnabled({ timeout: 10_000 });
+    await page.click(".ai-move-btn");
     await expect(page.locator(".move-history .move")).toHaveCount(4, {
       timeout: 10_000,
     });
@@ -98,12 +114,14 @@ test.describe("Chess Game E2E", () => {
     await clickSquare(page, "e2");
     await clickSquare(page, "e4");
 
+    await expect(page.locator(".ai-move-btn")).toBeEnabled({ timeout: 10_000 });
+    await page.click(".ai-move-btn");
     await expect(page.locator(".move-history .move")).toHaveCount(2, {
       timeout: 10_000,
     });
 
     // Click New Game
-    await page.click(".controls button");
+    await page.click(".new-game-btn");
 
     // Move history should clear
     await expect(page.locator(".move-history .move")).toHaveCount(0, {
@@ -123,7 +141,8 @@ test.describe("Chess Game E2E", () => {
     await clickSquare(page, "e2");
     await clickSquare(page, "e4");
 
-    // Wait for opponent response
+    await expect(page.locator(".ai-move-btn")).toBeEnabled({ timeout: 10_000 });
+    await page.click(".ai-move-btn");
     await expect(page.locator(".move-history .move")).toHaveCount(2, {
       timeout: 10_000,
     });

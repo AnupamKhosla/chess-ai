@@ -441,9 +441,14 @@ function init() {
     effort_options: string[];
   }> = [];
   let activeProviderLabel = "";
+  let activeProviderModel = "local-policy-v1";
+  let activeProviderEffort = "auto";
   let syncAgentStatus: ((label: string) => void) | null = null;
 
   const modelChoices: Record<string, Array<{ model: string; label: string }>> = {
+    local: [
+      { model: "local-policy-v1", label: "Free local policy · instant / no key" },
+    ],
     openai: [
       { model: "gpt-5.6-luna", label: "GPT-5.6 Luna · fastest / lowest cost" },
       { model: "gpt-5.6-terra", label: "GPT-5.6 Terra · balanced" },
@@ -545,7 +550,7 @@ function init() {
       ? "API key (held in memory only)"
       : "No key needed for this connection";
     providerKeyInput.disabled = !preset.requires_key;
-    providerBaseInput.disabled = preset.kind === "codex-cli" || preset.kind === "claude-cli";
+    providerBaseInput.disabled = preset.kind === "codex-cli" || preset.kind === "claude-cli" || preset.kind === "builtin";
     providerStatus.textContent = preset.help;
     if (preset.installed === false) {
       providerStatus.textContent += " CLI not found on this machine.";
@@ -558,6 +563,8 @@ function init() {
       const data = await getProviders();
       providerPresets = data.providers;
       activeProviderLabel = data.active.label;
+      activeProviderModel = data.active.model;
+      activeProviderEffort = data.active.effort;
       syncAgentStatus?.(activeProviderLabel);
       providerSelect.innerHTML = "";
       for (const preset of providerPresets) {
@@ -572,7 +579,7 @@ function init() {
       const activePreset = providerPresets.find((item) => item.id === data.active.provider);
       if (activePreset) renderEffortChoices(activePreset, data.active.effort);
       providerBaseInput.value = data.active.base_url;
-      providerKeyInput.disabled = data.active.kind === "codex-cli" || data.active.kind === "claude-cli";
+      providerKeyInput.disabled = data.active.kind === "codex-cli" || data.active.kind === "claude-cli" || data.active.kind === "builtin";
       providerKeyInput.placeholder = data.active.has_api_key
         ? "Key already configured (leave blank to clear)"
         : "API key (held in memory only)";
@@ -606,6 +613,8 @@ function init() {
           effort: providerEffortSelect.value,
         });
         activeProviderLabel = response.active.label;
+        activeProviderModel = response.active.model;
+        activeProviderEffort = response.active.effort;
         syncAgentStatus?.(activeProviderLabel);
         providerStatus.textContent = `${response.active.label} active · local login selected`;
       } else {
@@ -630,6 +639,8 @@ function init() {
         effort: providerEffortSelect.value,
       });
       activeProviderLabel = response.active.label;
+      activeProviderModel = response.active.model;
+      activeProviderEffort = response.active.effort;
       syncAgentStatus?.(activeProviderLabel);
       providerStatus.textContent = `${response.active.label} active · key stored in memory only`;
       providerKeyInput.value = "";
@@ -994,6 +1005,8 @@ function init() {
       if (codex.authenticated) {
         const response = await configureProvider({ provider: "codex", model: codex.model });
         activeProviderLabel = response.active.label;
+        activeProviderModel = response.active.model;
+        activeProviderEffort = response.active.effort;
         syncAgentStatus?.(activeProviderLabel);
         chatHint.textContent = `${response.active.label} active · AI directs opponent moves`;
         quickLoginBtn.textContent = "ChatGPT active";
@@ -1071,6 +1084,22 @@ function init() {
   const rightPanel = document.createElement("div");
   rightPanel.className = "right-panel";
   layout.appendChild(rightPanel);
+
+  const rightPanelTop = document.createElement("div");
+  rightPanelTop.className = "right-panel-top";
+  const rightPanelTitle = document.createElement("div");
+  rightPanelTitle.className = "right-panel-title";
+  rightPanelTitle.textContent = "Analysis panel";
+  rightPanelTop.appendChild(rightPanelTitle);
+  const closeRightPanelBtn = document.createElement("button");
+  closeRightPanelBtn.className = "close-panel-btn";
+  closeRightPanelBtn.type = "button";
+  closeRightPanelBtn.textContent = "×";
+  closeRightPanelBtn.title = "Close analysis panel";
+  closeRightPanelBtn.setAttribute("aria-label", "Close analysis panel");
+  rightPanelTop.appendChild(closeRightPanelBtn);
+  rightPanel.appendChild(rightPanelTop);
+  closeRightPanelBtn.addEventListener("click", () => setRightPanelCollapsed(true));
 
   // New Game button
   const newGameBtn = document.createElement("button");
@@ -1154,15 +1183,53 @@ function init() {
   const agentStatus = document.createElement("div");
   agentStatus.className = "opponent-agent-status";
   syncAgentStatus = (label: string) => {
-    agentStatus.textContent = `${label} active · AI directs opponent moves`;
+    agentStatus.textContent = `${label} active · only AI can make the opponent move`;
     agentStatus.className = "opponent-agent-status ai-active";
+    syncAiIdentity(label);
   };
   if (activeProviderLabel) {
     syncAgentStatus(activeProviderLabel);
   } else {
-    agentStatus.textContent = "AI-directed opponent · connect a provider";
+    agentStatus.textContent = "Free local AI ready · no key or login needed";
   }
   rightPanel.appendChild(agentStatus);
+
+  const aiMoveBtn = document.createElement("button");
+  aiMoveBtn.className = "ai-move-btn";
+  aiMoveBtn.type = "button";
+  aiMoveBtn.textContent = "Make AI move";
+  aiMoveBtn.disabled = true;
+  aiMoveBtn.title = "Ask the selected AI to make one legal move";
+  rightPanel.appendChild(aiMoveBtn);
+
+  const aiIdentityCard = document.createElement("div");
+  aiIdentityCard.className = "ai-identity-card";
+  const aiIdentityTitle = document.createElement("div");
+  aiIdentityTitle.className = "ai-identity-title";
+  aiIdentityTitle.textContent = "AI player status";
+  aiIdentityCard.appendChild(aiIdentityTitle);
+  const aiIdentityText = document.createElement("div");
+  aiIdentityText.className = "ai-identity-text";
+  aiIdentityText.textContent = "Free local AI · local-policy-v1 · instant · no key";
+  aiIdentityCard.appendChild(aiIdentityText);
+  const aiIdentityNote = document.createElement("div");
+  aiIdentityNote.className = "ai-identity-note";
+  aiIdentityNote.textContent = "Stockfish: analysis only, never the opponent.";
+  aiIdentityCard.appendChild(aiIdentityNote);
+  rightPanel.appendChild(aiIdentityCard);
+
+  function syncAiIdentity(label = activeProviderLabel, model = activeProviderModel, effort = activeProviderEffort) {
+    activeProviderLabel = label;
+    activeProviderModel = model;
+    activeProviderEffort = effort;
+    const local = label.toLowerCase().includes("free local") || model === "local-policy-v1";
+    aiIdentityText.textContent = local
+      ? `Free local AI · ${model} · instant · no key`
+      : `${label} · ${model} · ${effort} effort`;
+    aiIdentityNote.textContent = local
+      ? "Built-in legal policy plays the move; Stockfish is analysis-only."
+      : "Selected AI chooses the move; Stockfish is analysis-only and cannot play it.";
+  }
 
   // Game status
   const statusDisplay = document.createElement("div");
@@ -1505,7 +1572,11 @@ function init() {
       addChatBubble(
         "assistant",
         response.message,
-        response.source === "ai" ? "AI coach" : "AI unavailable",
+        response.source === "ai"
+          ? "AI coach"
+          : response.source === "local"
+            ? "Free local coach"
+            : "Coach",
       );
     } catch (error) {
       thinkingBubble.remove();
@@ -1564,7 +1635,9 @@ function init() {
     sourceTag.className = "coach-source";
     sourceTag.textContent = coaching.source === "ai+stockfish"
       ? "AI explanation · Stockfish facts"
-      : "Stockfish facts · local analysis";
+      : coaching.source === "local-ai+stockfish"
+        ? "Free local coach · Stockfish facts"
+        : "Stockfish facts · local analysis";
     msg.prepend(sourceTag);
     msg.dataset.ply = String(gc.getCurrentPly());
     msg.addEventListener("click", () => {
@@ -1636,23 +1709,66 @@ function init() {
     if (!san) return;
     playMoveSound("ai");
     if (method === "llm") {
-      agentStatus.textContent = `AI played ${san} · Stockfish checked legality`;
+      agentStatus.textContent = `AI played ${san} · Stockfish was analysis-only`;
       agentStatus.className = "opponent-agent-status ai-active";
       addChatBubble(
         "assistant",
         `I played **${san}**. ${reason || "It fits the opponent style and keeps the position challenging."}`,
         "AI opponent",
       );
-    } else {
-      agentStatus.textContent = `Stockfish fallback played ${san} · connect AI for directed play`;
-      agentStatus.className = "opponent-agent-status engine-fallback";
+    } else if (method === "local") {
+      agentStatus.textContent = `Free local AI played ${san} · no Stockfish move fallback`;
+      agentStatus.className = "opponent-agent-status ai-active";
       addChatBubble(
         "assistant",
-        `The AI provider was unavailable, so the safety fallback played **${san}**. Connect the selected provider for directed opponent play.`,
-        "Engine fallback",
+        `The free local AI played **${san}**. ${reason || "I chose a legal move from the local teaching policy."}`,
+        "Free local AI",
+      );
+    } else {
+      agentStatus.textContent = "Unexpected engine move refused — no AI move was accepted";
+      agentStatus.className = "opponent-agent-status ai-refused";
+      addChatBubble(
+        "assistant",
+        "I refused an engine-only move. Stockfish is analysis-only; connect or select an AI player and try again.",
+        "AI move refused",
       );
     }
   });
+
+  function updateAiMoveButton(state: { awaiting: boolean; thinking: boolean; error?: string | null }) {
+    if (state.thinking) {
+      aiMoveBtn.disabled = true;
+      aiMoveBtn.textContent = "AI thinking…";
+      statusDisplay.textContent = "AI is thinking…";
+      statusDisplay.classList.add("thinking");
+      return;
+    }
+    statusDisplay.classList.remove("thinking");
+    if (state.awaiting) {
+      aiMoveBtn.disabled = false;
+      aiMoveBtn.textContent = "Make AI move";
+      statusDisplay.textContent = state.error
+        ? `AI did not move: ${state.error}`
+        : "Your move is reviewed. Ask the AI to play.";
+      if (state.error) {
+        addChatBubble(
+          "assistant",
+          `No opponent move was made. ${state.error} Stockfish remains analysis-only. Try **Make AI move** again or choose another AI provider.`,
+          "AI unavailable",
+        );
+      }
+    } else {
+      aiMoveBtn.disabled = true;
+      aiMoveBtn.textContent = "Your turn";
+      if (!state.error) statusDisplay.textContent = "Your turn";
+    }
+  }
+
+  gc.setAiTurnCallback(updateAiMoveButton);
+  aiMoveBtn.addEventListener("click", () => {
+    void gc.requestAiMove();
+  });
+  updateAiMoveButton({ awaiting: false, thinking: false });
 
   firstBtn.addEventListener("click", () => gc.jumpToPly(0));
   backBtn.addEventListener("click", () => gc.stepBack());

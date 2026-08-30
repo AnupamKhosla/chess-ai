@@ -6,14 +6,14 @@ from server.config import Settings
 
 class TestSettings:
     def test_local_defaults_without_provider_setup(self, monkeypatch):
-        """The app can start with the no-login local Ollama defaults."""
+        """The app can start with the instant no-login local AI defaults."""
         monkeypatch.delenv("LLM_BASE_URL", raising=False)
         monkeypatch.delenv("LLM_MODEL", raising=False)
         monkeypatch.delenv("LLM_PROVIDER", raising=False)
         settings = Settings(_env_file=None)
-        assert settings.llm_provider == "ollama"
-        assert settings.llm_base_url == "http://127.0.0.1:11434"
-        assert settings.llm_model == "llama3.2"
+        assert settings.llm_provider == "local"
+        assert settings.llm_base_url == ""
+        assert settings.llm_model == "local-policy-v1"
 
     def test_minimal_config(self, monkeypatch):
         """A hosted or local provider can still be configured explicitly."""

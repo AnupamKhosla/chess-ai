@@ -40,7 +40,7 @@ def test_new_game(client):
 
 
 def test_make_move(client):
-    """POST /api/game/move applies player move and returns opponent response."""
+    """Player move is reviewed first; AI reply is a separate action."""
     new = client.post("/api/game/new").json()
     sid = new["session_id"]
 
@@ -55,8 +55,16 @@ def test_make_move(client):
     assert "opponent_move_san" in data
     assert "fen" in data
     assert data["status"] in ("playing", "checkmate", "stalemate", "draw")
-    # After opponent moves, it should be white's turn again
-    assert " w " in data["fen"]
+    assert data["opponent_move_uci"] is None
+    assert data["ai_turn"] is True
+    assert " b " in data["fen"]
+
+    ai_response = client.post("/api/game/ai-move", json={"session_id": sid})
+    assert ai_response.status_code == 200
+    ai_data = ai_response.json()
+    assert ai_data["opponent_move_uci"] is not None
+    assert ai_data["opponent_move_method"] in ("local", "llm")
+    assert " w " in ai_data["fen"]
 
 
 def test_invalid_move(client):
@@ -104,12 +112,16 @@ def test_multiple_moves(client):
     assert r1.status_code == 200
     assert r1.json()["status"] == "playing"
 
+    r_ai = client.post("/api/game/ai-move", json={"session_id": sid})
+    assert r_ai.status_code == 200
+
     r2 = client.post("/api/game/move", json={
         "session_id": sid,
         "move": "d2d4",
     })
     assert r2.status_code == 200
     assert r2.json()["status"] == "playing"
+    assert r2.json()["ai_turn"] is True
 
 
 def test_new_game_with_depth(client):

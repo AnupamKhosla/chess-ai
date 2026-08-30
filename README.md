@@ -47,7 +47,7 @@ The browser has one continuous coach room, while the server adapts the
 conversation to the selected connection. Open the menu and choose one of:
 
 - DeepSeek, OpenAI, Anthropic, or OpenRouter with an API key
-- Ollama or LM Studio for a local OpenAI-compatible model
+- Built-in local AI works immediately with no key; Ollama or LM Studio are also supported
 - ChatGPT/Codex login through an installed, authenticated `codex` CLI
 - Claude subscription through an installed, authenticated `claude` CLI
 
@@ -58,7 +58,7 @@ the two CLI choices use the local login rather than treating a subscription as
 an API key. The chess board, Stockfish, and engine-backed move coaching stay
 available if the selected language model is offline.
 
-The browser runs its own Stockfish instance for the eval bar. The server performs deeper analysis for coaching. The system degrades gracefully: if the LLM goes down, the game continues without coaching; if server Stockfish goes down, the browser engine takes over.
+The browser runs its own Stockfish instance for the eval bar. The server performs deeper analysis for coaching. Stockfish is analysis-only: it can never make the opponent's move. A fresh install starts with the built-in local AI policy, which is instant and needs no key or login; connected language models can take over move selection and conversation.
 
 For deep architectural details, see [guide/DESIGN.md](guide/DESIGN.md).
 
@@ -67,7 +67,7 @@ For deep architectural details, see [guide/DESIGN.md](guide/DESIGN.md).
 ### Prerequisites
 
 - **Nix** (with flakes enabled) — for development environment
-- **LLM access** — local Ollama or OpenRouter API key
+- **LLM access** — optional; the built-in local AI works with no key or login
 - **Stockfish** (included in nix devshell)
 
 ### Local Development
@@ -88,7 +88,7 @@ For deep architectural details, see [guide/DESIGN.md](guide/DESIGN.md).
 3. **Configure environment:**
    ```bash
    cp .env.example .env.chess
-   # Optional: edit .env.chess for a hosted provider. Ollama is the no-login default.
+   # Optional: edit .env.chess for a hosted provider. Built-in local AI is the no-login default.
    ```
 
    For local Ollama:
@@ -127,7 +127,7 @@ The first startup seeds the ChromaDB knowledge base automatically (takes ~30 sec
 - **Adjustable difficulty** — ELO-based profiles control opponent strength and coaching depth
 - **Puzzle database** — 5.7M Lichess puzzles with full-text search
 - **RAG-powered context** — retrieves relevant patterns, openings, and concepts from the knowledge base
-- **Graceful degradation** — game continues even if LLM/server goes down (browser-side Stockfish fallback)
+- **AI-only move control** — the AI or no-key local policy makes opponent moves; Stockfish is never a move fallback
 - **Continuous coach chat** — ask questions in natural English while the coach receives the current FEN, move list, level, and prior conversation
 - **Local session archive** — games and chat transcripts are stored in ignored local SQLite data and can resume after a restart
 - **Provider-neutral setup** — switch API-key providers, local models, Codex login, or Claude Code login without changing the board
