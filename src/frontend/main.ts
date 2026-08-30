@@ -441,13 +441,21 @@ function init() {
     effort_options: string[];
   }> = [];
   let activeProviderLabel = "";
-  let activeProviderModel = "local-policy-v1";
+  let activeProviderModel = "stockfish-local-v1";
   let activeProviderEffort = "auto";
   let syncAgentStatus: ((label: string) => void) | null = null;
 
   const modelChoices: Record<string, Array<{ model: string; label: string }>> = {
     local: [
-      { model: "local-policy-v1", label: "Free local policy · instant / no key" },
+      { model: "stockfish-local-v1", label: "Stockfish-backed player · instant / no key" },
+    ],
+    gemini: [
+      { model: "gemini-2.5-flash", label: "Gemini 2.5 Flash · free tier / fast" },
+      { model: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite · free tier / fastest" },
+    ],
+    groq: [
+      { model: "openai/gpt-oss-120b", label: "GPT-OSS 120B · Groq free tier / strong" },
+      { model: "openai/gpt-oss-20b", label: "GPT-OSS 20B · Groq free tier / fastest" },
     ],
     openai: [
       { model: "gpt-5.6-luna", label: "GPT-5.6 Luna · fastest / lowest cost" },
@@ -1362,7 +1370,7 @@ function init() {
   if (activeProviderLabel) {
     syncAgentStatus(activeProviderLabel);
   } else {
-    agentStatus.textContent = "Free local AI ready · no key or login needed";
+    agentStatus.textContent = "Free local engine-backed player ready · no key or login needed";
   }
   rightPanel.appendChild(agentStatus);
 
@@ -1382,7 +1390,7 @@ function init() {
   aiIdentityCard.appendChild(aiIdentityTitle);
   const aiIdentityText = document.createElement("div");
   aiIdentityText.className = "ai-identity-text";
-  aiIdentityText.textContent = "Free local AI · local-policy-v1 · instant · no key";
+  aiIdentityText.textContent = "Free local engine-backed player · stockfish-local-v1 · instant · no key";
   aiIdentityCard.appendChild(aiIdentityText);
   const aiIdentityNote = document.createElement("div");
   aiIdentityNote.className = "ai-identity-note";
@@ -1394,12 +1402,12 @@ function init() {
     activeProviderLabel = label;
     activeProviderModel = model;
     activeProviderEffort = effort;
-    const local = label.toLowerCase().includes("free local") || model === "local-policy-v1";
+    const local = label.toLowerCase().includes("engine-backed") || model === "local-policy-v1" || model === "stockfish-local-v1" || model === "stockfish-browser-v1";
     aiIdentityText.textContent = local
-      ? `Free local AI · ${model} · instant · no key`
+      ? `Free local engine-backed player · ${model} · instant · no key`
       : `${label} · ${model} · ${effort} effort`;
     aiIdentityNote.textContent = local
-      ? "Built-in legal policy plays the move; Stockfish is analysis-only."
+      ? "Stockfish chooses the move locally or in the browser. No language model is connected in guest mode."
       : "Selected AI chooses the move; Stockfish is analysis-only and cannot play it.";
   }
 
@@ -1878,13 +1886,13 @@ function init() {
         `I played **${san}**. ${reason || "It fits the opponent style and keeps the position challenging."}`,
         "AI opponent",
       );
-    } else if (method === "local") {
-      agentStatus.textContent = `Free local AI played ${san} · no Stockfish move fallback`;
+    } else if (method === "local-engine" || method === "local") {
+      agentStatus.textContent = `Local engine-backed player played ${san} · Stockfish selected it`;
       agentStatus.className = "opponent-agent-status ai-active";
       addChatBubble(
         "assistant",
-        `The free local AI played **${san}**. ${reason || "I chose a legal move from the local teaching policy."}`,
-        "Free local AI",
+        `The local engine-backed player played **${san}**. ${reason || "Stockfish selected a legal move for this practice level."}`,
+        "Local engine player",
       );
     } else {
       agentStatus.textContent = "Unexpected engine move refused — no AI move was accepted";

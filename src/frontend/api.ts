@@ -84,7 +84,7 @@ export interface MoveResponse {
   player_move_san: string;
   opponent_move_uci: string | null;
   opponent_move_san: string | null;
-  opponent_move_method?: "llm" | "local" | "engine" | null;
+  opponent_move_method?: "llm" | "local" | "local-engine" | "engine" | null;
   opponent_move_reason?: string | null;
   status: string;
   result: string | null;
@@ -175,13 +175,13 @@ function demoProvider(): ProviderInfo {
     provider: "local",
     kind: "builtin",
     base_url: "",
-    model: "browser-policy-v1",
+    model: "stockfish-browser-v1",
     effort: "auto",
     effort_options: ["auto"],
     has_api_key: false,
     installed: null,
     authenticated: null,
-    label: "Free browser AI (no key)",
+    label: "Free browser engine-backed player (no key)",
   };
 }
 
@@ -320,12 +320,23 @@ export async function sendMove(
 }
 
 /** Ask the selected AI to play the pending opponent turn. */
-export async function requestAiMove(sessionId: string): Promise<MoveResponse> {
+export async function requestAiMove(sessionId: string, preferredUci?: string): Promise<MoveResponse> {
   if (STATIC_DEMO) {
     const session = getDemoSession(sessionId);
     if (!session) throw new Error("Demo game session not found");
     if (session.board.turn() === "w") throw new Error("It is your turn");
-    const selected = chooseDemoMove(session.board);
+    let selected = chooseDemoMove(session.board);
+    if (preferredUci) {
+      const preferred = session.board.moves({ verbose: true }).find((move) =>
+        move.from + move.to + (move.promotion || "") === preferredUci,
+      );
+      if (!preferred) throw new Error("Browser engine returned an illegal move");
+      selected = {
+        san: preferred.san,
+        uci: preferred.from + preferred.to + (preferred.promotion || ""),
+        reason: "Stockfish selected this legal move in the browser for the current practice level.",
+      };
+    }
     session.board.move({
       from: selected.uci.slice(0, 2),
       to: selected.uci.slice(2, 4),
@@ -337,7 +348,7 @@ export async function requestAiMove(sessionId: string): Promise<MoveResponse> {
       player_move_san: "",
       opponent_move_uci: selected.uci,
       opponent_move_san: selected.san,
-      opponent_move_method: "local",
+      opponent_move_method: "local-engine",
       opponent_move_reason: selected.reason,
       status: session.board.isGameOver() ? "draw" : "playing",
       result: null,
@@ -421,10 +432,10 @@ export async function getProviders(): Promise<ProvidersResponse> {
       active: demoProvider(),
       providers: [{
         id: "local",
-        label: "Free browser AI (no key)",
+        label: "Free browser engine-backed player (no key)",
         kind: "builtin",
         base_url: "",
-        model: "browser-policy-v1",
+        model: "stockfish-browser-v1",
         effort_options: ["auto"],
         requires_key: false,
         cli_command: null,

@@ -8,6 +8,7 @@ import pytest
 from server.analysis import GamePhase, detect_game_phase
 from server.engine import MoveInfo
 from server.opponent import (
+    AIUnavailableError,
     filter_candidates,
     select_opponent_move,
 )
@@ -129,25 +130,41 @@ class TestCandidateFiltering:
 
 
 class TestSelectOpponentMove:
-    async def test_no_key_local_ai_chooses_the_move(self):
+    async def test_local_engine_takes_hanging_pawn_instead_of_old_policy_blunder(self):
+        """The no-key player must use engine candidates at a tactical moment."""
         engine = AsyncMock()
         engine.best_moves = AsyncMock(return_value=[
-            MoveInfo(uci="e7e5", score_cp=-10, score_mate=None),
-            MoveInfo(uci="d7d5", score_cp=-15, score_mate=None),
+            MoveInfo(uci="g7f6", score_cp=251, score_mate=None),
+            MoveInfo(uci="a8b8", score_cp=267, score_mate=None),
+            MoveInfo(uci="c5c4", score_cp=311, score_mate=None),
+        ])
+        board = chess.Board(
+            "r1bqkb1r/p1p1pppp/5P2/2pp4/8/8/PPPPQPPP/RNB1K1NR b KQkq - 0 6"
+        )
+
+        result = await select_opponent_move(board, engine, opponent_rating=2000)
+
+        assert result.san == "gxf6"
+        assert result.method == "local-engine"
+
+    async def test_no_key_local_engine_chooses_a_legal_move(self):
+        engine = AsyncMock()
+        engine.best_moves = AsyncMock(return_value=[
+            MoveInfo(uci="e2e4", score_cp=10, score_mate=None),
+            MoveInfo(uci="d2d4", score_cp=15, score_mate=None),
         ])
         board = chess.Board()
         result = await select_opponent_move(board, engine)
         assert result.uci in {move.uci() for move in board.legal_moves}
-        assert result.method == "local"
+        assert result.method == "local-engine"
         assert result.phase == GamePhase.OPENING
 
     async def test_raises_on_no_moves(self):
         engine = AsyncMock()
         engine.best_moves = AsyncMock(return_value=[])
         board = chess.Board()
-        result = await select_opponent_move(board, engine)
-        assert result.method == "local"
-        assert result.uci in {move.uci() for move in board.legal_moves}
+        with pytest.raises(AIUnavailableError, match="no legal move"):
+            await select_opponent_move(board, engine)
 
     async def test_phase_is_detected(self):
         engine = AsyncMock()
@@ -180,8 +197,8 @@ class TestSelectOpponentMove:
         assert result.reason == "develops queenside play"
         teacher.select_teaching_move.assert_called_once()
 
-    async def test_ai_can_choose_legal_move_outside_engine_shortlist(self):
-        """The AI is the player; engine hints do not restrict legal choices."""
+    async def test_ai_cannot_bypass_engine_screened_candidates(self):
+        """A model move outside the screened set must not be applied."""
         engine = AsyncMock()
         board = chess.Board()
         board.push_san("e4")
@@ -192,13 +209,11 @@ class TestSelectOpponentMove:
         teacher = AsyncMock()
         teacher.select_teaching_move = AsyncMock(return_value=("a6", "creates a flexible counterplay plan"))
 
-        result = await select_opponent_move(board, engine, teacher=teacher)
+        with pytest.raises(AIUnavailableError, match="No move was made"):
+            await select_opponent_move(board, engine, teacher=teacher)
 
-        assert result.uci == "a7a6"
-        assert result.method == "llm"
-
-    async def test_llm_failure_uses_local_ai_not_stockfish(self):
-        """An invalid/unavailable LLM never turns into a Stockfish move."""
+    async def test_llm_failure_stops_without_substituting_another_player(self):
+        """An invalid/unavailable LLM never silently changes the player."""
         engine = AsyncMock()
         board = chess.Board(
             "r2q1rk1/ppp1bppp/2np1n2/4p3/2B1P1b1/2NP1N2/PPP2PPP/R1BQ1RK1 b - - 0 10"
@@ -210,9 +225,8 @@ class TestSelectOpponentMove:
         teacher = AsyncMock()
         teacher.select_teaching_move = AsyncMock(return_value=None)
 
-        result = await select_opponent_move(board, engine, teacher=teacher)
-        assert result.uci in {move.uci() for move in board.legal_moves}
-        assert result.method == "local"
+        with pytest.raises(AIUnavailableError, match="No move was made"):
+            await select_opponent_move(board, engine, teacher=teacher)
 
     async def test_endgame_still_uses_ai(self):
         """Endgames must not bypass the AI with an engine move."""
@@ -224,8 +238,8 @@ class TestSelectOpponentMove:
         ])
         teacher = AsyncMock()
 
-        result = await select_opponent_move(board, engine, teacher=teacher)
-        assert result.method == "local"
+        with pytest.raises(AIUnavailableError, match="No move was made"):
+            await select_opponent_move(board, engine, teacher=teacher)
 
     async def test_single_engine_hint_does_not_bypass_ai(self):
         """One Stockfish hint still cannot become the opponent move."""
@@ -237,5 +251,5 @@ class TestSelectOpponentMove:
         ])
         teacher = AsyncMock()
 
-        result = await select_opponent_move(board, engine, teacher=teacher)
-        assert result.method == "local"
+        with pytest.raises(AIUnavailableError, match="No move was made"):
+            await select_opponent_move(board, engine, teacher=teacher)

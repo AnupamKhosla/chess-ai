@@ -36,7 +36,7 @@ export type PlyChangeCallback = (ply: number, maxPly: number) => void;
 /** Callback after the AI has replied to the player's move. */
 export type OpponentMoveCallback = (
   san: string,
-  method: "llm" | "local" | "engine" | null,
+  method: "llm" | "local" | "local-engine" | "engine" | null,
   reason?: string | null,
 ) => void;
 
@@ -252,7 +252,18 @@ export class GameController {
     this.setThinking(true);
     this.onAiTurn?.({ awaiting: true, thinking: true });
     try {
-      const resp = await requestAiMove(this.sessionId);
+      const staticDemo = window.location.hostname.endsWith(".github.io") ||
+        window.location.search.includes("demo=1");
+      let browserEngineMove: string | undefined;
+      if (staticDemo) {
+        if (!this.engine?.isReady()) {
+          throw new Error("Browser Stockfish is still loading; try again in a moment.");
+        }
+        const lines = await this.engine.evaluateMultiPVAsync(this.game.fen(), 1, 16);
+        browserEngineMove = lines[0]?.pv[0];
+        if (!browserEngineMove) throw new Error("Browser Stockfish did not return a move.");
+      }
+      const resp = await requestAiMove(this.sessionId, browserEngineMove);
       if (resp.opponent_move_method === "engine") {
         // Defense in depth for stale servers or a malformed response: the
         // browser will not render an engine-only move as the AI's move.
@@ -564,7 +575,7 @@ export class GameController {
     this.notifyPlyChange();
     this.onOpponentMove?.(
       resp.opponent_move_san || "",
-      resp.opponent_move_method ?? "local",
+      resp.opponent_move_method ?? "local-engine",
       resp.opponent_move_reason ?? null,
     );
 

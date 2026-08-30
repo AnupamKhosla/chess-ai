@@ -20,7 +20,7 @@ def test_provider_public_metadata_never_contains_api_key():
 
 def test_provider_catalog_includes_subscription_and_local_options():
     ids = {item["id"] for item in provider_catalog(ProviderConfig())}
-    assert {"deepseek", "openai", "anthropic", "ollama", "lmstudio", "codex", "claude"} <= ids
+    assert {"gemini", "groq", "deepseek", "openai", "anthropic", "ollama", "lmstudio", "codex", "claude"} <= ids
 
 
 @pytest.mark.asyncio

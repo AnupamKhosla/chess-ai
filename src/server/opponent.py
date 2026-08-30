@@ -7,6 +7,7 @@ and safety checks; the configured AI chooses the actual legal move.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import logging
 
 import chess
@@ -15,7 +16,6 @@ from server.analysis import GamePhase, analyze, detect_game_phase
 from server.descriptions import describe_position_from_report
 from server.engine import EngineProtocol, MoveInfo
 from server.llm import ChessTeacher, OpponentMoveContext
-from server.local_ai import choose_local_move
 
 
 # Centipawn thresholds per phase — moves within this delta of the best
@@ -36,15 +36,15 @@ class OpponentMoveResult:
     san: str
     phase: GamePhase
     reason: str | None = None   # LLM's rationale (for logging)
-    method: str = "local"       # "llm" or "local"
+    method: str = "local-engine"  # "llm" or "local-engine"
 
 
 class AIUnavailableError(RuntimeError):
     """Raised when no AI can choose the opponent's move.
 
-    Stockfish is intentionally not an allowed recovery path.  The built-in
-    local policy is normally available, but this error keeps the game stopped
-    rather than ever making an engine move if that policy is unavailable.
+    A configured language model is never silently replaced by a different
+    move source. The explicit no-key guest mode is the only mode that uses
+    the local Stockfish player.
     """
 
 
@@ -89,6 +89,90 @@ def filter_candidates(
     return filtered
 
 
+def _selection_depth(opponent_rating: int) -> int:
+    """Choose a responsive local-engine depth for the selected practice level.
+
+    The rating is a practice target, not a claim that Stockfish has an Elo.
+    Stronger targets get a deeper search and always use the top engine move;
+    lower targets sample from a narrow top set in ``_select_local_engine``.
+    """
+    if opponent_rating < 900:
+        return 10
+    if opponent_rating < 1300:
+        return 13
+    if opponent_rating < 1700:
+        return 16
+    if opponent_rating < 2100:
+        return 19
+    return 22
+
+
+def _engine_reason(board: chess.Board, move: chess.Move, rank: int) -> str:
+    """Give the local engine move a factual, non-anthropomorphic explanation."""
+    san = board.san(move)
+    if san.endswith("#"):
+        return f"{san} is a forced checkmate found by the local engine."
+    if san.endswith("+"):
+        return f"{san} is a forcing check; you must answer the king threat."
+    if "x" in san:
+        return f"{san} wins or recovers material while preserving the engine's best continuation."
+    if san.startswith("O-O"):
+        return f"{san} secures the king and activates a rook according to the local engine."
+    if rank == 0:
+        return f"{san} is the local engine's top move: it improves the position and avoids the immediate tactical errors."
+    return f"{san} is a near-top local-engine move chosen to keep the practice game less predictable."
+
+
+async def _select_local_engine_move(
+    board: chess.Board,
+    engine: EngineProtocol,
+    opponent_rating: int,
+) -> OpponentMoveResult:
+    """Play a legal, engine-backed move in the no-key guest mode.
+
+    This is deliberately separate from LLM selection. It is the honest
+    always-available fallback: the local engine chooses the move, with a
+    small top-line sample at lower practice ratings. It never uses the old
+    hand-written policy and never claims to be a language model.
+    """
+    phase = detect_game_phase(board)
+    try:
+        candidates = await engine.best_moves(
+            board.fen(), n=CANDIDATE_COUNT, depth=_selection_depth(opponent_rating)
+        )
+    except Exception as exc:  # pragma: no cover - depends on local engine
+        logger.warning("Local engine player unavailable: %s", exc)
+        raise AIUnavailableError(
+            "The local Stockfish player is unavailable. Start Stockfish or connect a language model."
+        ) from exc
+
+    legal = {move.uci(): move for move in board.legal_moves}
+    ranked = [candidate for candidate in candidates if candidate.uci in legal]
+    if not ranked:
+        raise AIUnavailableError(
+            "The local Stockfish player returned no legal move. No move was made."
+        )
+
+    # A high target should play the engine's top line. Lower targets get a
+    # deterministic choice from the first few engine lines, never from an
+    # unsearched arbitrary legal move.
+    width = 1 if opponent_rating >= 1800 else 2 if opponent_rating >= 1200 else 3
+    width = min(width, len(ranked))
+    digest = hashlib.sha256(
+        f"{board.fen()}|{opponent_rating}".encode()
+    ).digest()
+    rank = int.from_bytes(digest[:4], "big") % width
+    selected = ranked[rank]
+    move = legal[selected.uci]
+    return OpponentMoveResult(
+        uci=move.uci(),
+        san=board.san(move),
+        phase=phase,
+        reason=_engine_reason(board, move, rank),
+        method="local-engine",
+    )
+
+
 async def select_opponent_move(
     board: chess.Board,
     engine: EngineProtocol,
@@ -97,12 +181,12 @@ async def select_opponent_move(
     playing_style: str = "balanced",
     persona: str = "Anna Cramling",
 ) -> OpponentMoveResult:
-    """Select an opponent move. Stockfish can advise, never play.
+    """Select an opponent move using either a configured LLM or local Stockfish.
 
-    A connected language model gets first choice. If it is unavailable or
-    returns invalid SAN, the no-key local policy chooses a legal move. That
-    policy is deliberately separate from Stockfish, so an AI failure can never
-    turn into a silent engine move.
+    In the explicit no-key mode, Stockfish is the player and is identified as
+    such. In a configured LLM mode, Stockfish supplies legal, quality-screened
+    candidates and the LLM chooses among them. A failed configured LLM stops
+    the turn instead of silently changing the selected player.
     """
     fen = board.fen()
     phase = detect_game_phase(board)
@@ -110,9 +194,7 @@ async def select_opponent_move(
     if not legal_moves:
         raise AIUnavailableError("The position has no legal opponent move.")
 
-    # The built-in provider is intentionally immediate and does not make a
-    # network or Stockfish call. It is the default guest AI for a fresh
-    # installation.
+    # The built-in provider is the explicit no-key local engine player.
     provider_id = "local"
     if teacher is not None:
         # Real ChessTeacher exposes a synchronous provider_info() method. Keep
@@ -122,16 +204,18 @@ async def select_opponent_move(
         configured_id = getattr(config, "provider", None)
         provider_id = configured_id if isinstance(configured_id, str) else "remote"
 
-    # These are hints for the conversational model only. An engine outage
-    # must not prevent the free local player from responding.
-    if provider_id == "local":
-        candidates = []
-    else:
-        try:
-            candidates = await engine.best_moves(fen, n=CANDIDATE_COUNT, depth=SELECTION_DEPTH)
-        except Exception as exc:  # pragma: no cover - depends on external engine
-            logger.warning("Stockfish hints unavailable for AI move: %s", exc)
-            candidates = []
+    if teacher is None or provider_id == "local":
+        return await _select_local_engine_move(board, engine, opponent_rating)
+
+    try:
+        candidates = await engine.best_moves(
+            fen, n=CANDIDATE_COUNT, depth=max(SELECTION_DEPTH, 16)
+        )
+    except Exception as exc:  # pragma: no cover - depends on external engine
+        logger.warning("Stockfish candidate generation unavailable for LLM move: %s", exc)
+        raise AIUnavailableError(
+            "Stockfish could not verify candidate moves for the selected language model. No move was made."
+        ) from exc
 
     filtered = filter_candidates(candidates, phase)
 
@@ -144,17 +228,14 @@ async def select_opponent_move(
             method=method,
         )
 
-    if teacher is None or provider_id == "local":
-        local = choose_local_move(
-            board, opponent_rating=opponent_rating, playing_style=playing_style
-        )
-        return _make_result(
-            chess.Move.from_uci(local.uci), method="local", reason=local.reason
+    if not filtered:
+        raise AIUnavailableError(
+            "Stockfish returned no safe candidates for the selected language model. No move was made."
         )
 
-    # Build context for LLM selection. The AI sees every legal move, not just
-    # Stockfish's shortlist, so it can choose a teaching move rather than
-    # rubber-stamping the engine's first line.
+    # Build context for LLM selection. The model sees the legal move list for
+    # context, but can only select from Stockfish's screened shortlist. This
+    # preserves human-style choice without allowing an ungrounded blunder.
     try:
         report = analyze(board)
         student_is_white = board.turn != chess.WHITE
@@ -177,7 +258,7 @@ async def select_opponent_move(
             legal_moves=[board.san(move) for move in legal_moves],
         )
         result = await teacher.select_teaching_move(ctx)
-    except Exception as exc:  # provider failures are recovered by local AI
+    except Exception as exc:  # provider failures must not change the player
         logger.warning("Configured AI opponent failed: %s", exc)
         result = None
 
@@ -185,18 +266,20 @@ async def select_opponent_move(
         selected_san, reason = result
         normalized = selected_san.strip().replace("0-0-0", "O-O-O").replace("0-0", "O-O")
         normalized = normalized.rstrip("!?+#")
-        for move_obj in legal_moves:
+        # Enforce the contract from OPPONENT_SYSTEM_PROMPT. A model may only
+        # choose from Stockfish-screened candidates; merely being legal is not
+        # enough to bypass the tactical guardrail.
+        legal_uci = {move.uci() for move in legal_moves}
+        screened_moves = [
+            chess.Move.from_uci(candidate.uci)
+            for candidate in filtered
+            if candidate.uci in legal_uci
+        ]
+        for move_obj in screened_moves:
             legal_san = board.san(move_obj)
             if legal_san.rstrip("!?+#") == normalized or move_obj.uci() == selected_san.strip():
                 return _make_result(move_obj, method="llm", reason=reason)
 
-    # The recovery path is another AI (the no-key local policy), never
-    # Stockfish. This keeps the game playable while making the source visible.
-    logger.info(
-        "Configured AI was unavailable or invalid; using the no-key local AI "
-        "(rating=%s, style=%s)", opponent_rating, playing_style,
+    raise AIUnavailableError(
+        "The selected language model was unavailable or returned an invalid move. No move was made."
     )
-    local = choose_local_move(
-        board, opponent_rating=opponent_rating, playing_style=playing_style
-    )
-    return _make_result(chess.Move.from_uci(local.uci), method="local", reason=local.reason)

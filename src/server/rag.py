@@ -5,7 +5,17 @@ Together, OpenAI, etc.) and ChromaDB for vector storage.
 """
 
 from dataclasses import dataclass
-import chromadb
+from typing import Any
+
+try:
+    import chromadb
+    _CHROMA_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover - depends on installed Chroma/Pydantic versions
+    # ChromaDB currently has an import-time incompatibility with some Python
+    # 3.14 + Pydantic combinations. RAG is optional; do not prevent the chess
+    # server from starting when the board, Stockfish, and coach can still run.
+    chromadb = None  # type: ignore[assignment]
+    _CHROMA_IMPORT_ERROR = exc
 import httpx
 
 
@@ -38,10 +48,13 @@ class ChessRAG:
         self._api_key = api_key
         self._persist_dir = persist_dir
         self._collection_name = collection_name
-        self._client: chromadb.ClientAPI | None = None
-        self._collection: chromadb.Collection | None = None
+        self._client: Any = None
+        self._collection: Any = None
 
     async def start(self):
+        if chromadb is None:
+            detail = str(_CHROMA_IMPORT_ERROR) if _CHROMA_IMPORT_ERROR else "unknown import error"
+            raise RuntimeError(f"ChromaDB is unavailable; RAG is disabled: {detail}")
         if self._persist_dir:
             self._client = chromadb.PersistentClient(path=self._persist_dir)
         else:

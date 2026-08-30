@@ -345,6 +345,72 @@ class GameManager:
                 coaching_data.message = llm_message
                 coaching_data.source = "ai+stockfish"
 
+    async def _fast_llm_review(
+        self,
+        coaching_data: CoachingResponse,
+        board_before: chess.Board,
+        board_after: chess.Board,
+        player_move_uci: str,
+        eval_before,
+        eval_after,
+        elo_profile: str,
+        coach_name: str,
+    ) -> None:
+        """Ask the selected language model for a quick, grounded move review.
+
+        ``fast_review`` used to skip every LLM call, so the UI showed a
+        template sentence even when Codex was active. This lightweight path
+        sends the move and engine facts directly to the model without running
+        the expensive game-tree/RAG enrichment pass.
+        """
+        if self._teacher is None:
+            return
+        provider = self._teacher.provider_info().get("provider")
+        if provider == "local":
+            return
+
+        def eval_text(evaluation) -> str:
+            if evaluation.score_mate is not None:
+                return f"mate in {abs(evaluation.score_mate)}"
+            if evaluation.score_cp is not None:
+                return f"{evaluation.score_cp / 100:.2f} pawns from White's perspective"
+            return "unknown"
+
+        move = chess.Move.from_uci(player_move_uci)
+        player_san = board_before.san(move)
+        best_san = "not supplied"
+        if eval_before.best_move:
+            try:
+                best_san = board_before.san(chess.Move.from_uci(eval_before.best_move))
+            except (ValueError, chess.IllegalMoveError):
+                pass
+
+        prompt = f"""Give a concise, concrete review of the student's move.
+
+Student move: {player_san} ({player_move_uci})
+Position before move FEN: {board_before.fen()}
+Position after move FEN: {board_after.fen()}
+Engine evaluation before: {eval_text(eval_before)}
+Engine evaluation after: {eval_text(eval_after)}
+Engine's best move before: {best_san}
+Deterministic move classification: {coaching_data.quality.value}
+Tactical facts after the move: {coaching_data.tactics_summary or 'none reported'}
+
+Explain what the student should have checked, whether the move is sound, and
+one concrete human takeaway. Use only the supplied facts. Keep it to 2-4
+sentences and do not invent a line or claim a sacrifice is intentional unless
+the facts support it."""
+        response = await self._teacher.explain_move(
+            prompt,
+            coach=coach_name,
+            verbosity="terse",
+            move_quality=coaching_data.quality.value,
+            elo_profile=elo_profile,
+        )
+        if response:
+            coaching_data.message = response
+            coaching_data.source = "ai+stockfish"
+
     @staticmethod
     def _coaching_dict(coaching_data: CoachingResponse | None) -> dict | None:
         if coaching_data is None:
@@ -440,11 +506,26 @@ class GameManager:
                     f"{player_san} is a sound move. A human player would now check "
                     f"the opponent's forcing replies and compare the plan with {best_san}."
                 ),
-                source="local-ai+stockfish",
+                source="stockfish",
             )
 
+        # Fast review still calls the selected LLM with a small grounded
+        # prompt. Only the expensive game-tree/RAG pass is deferred.
+        if coaching_data is not None and fast_review:
+            try:
+                await asyncio.wait_for(
+                    self._fast_llm_review(
+                        coaching_data, board_before, board.copy(), move_uci,
+                        eval_before, eval_after, state.elo_profile, state.coach_name,
+                    ),
+                    timeout=20.0,
+                )
+            except asyncio.TimeoutError:
+                logging.getLogger(__name__).warning("Fast coaching review timed out")
+            except Exception as exc:
+                logging.getLogger(__name__).warning("Fast coaching review failed: %s", exc)
         # Enrich coaching with two-pass pipeline + RAG + LLM (timeout so game never freezes).
-        if coaching_data is not None and not fast_review:
+        elif coaching_data is not None:
             try:
                 await asyncio.wait_for(
                     self._enrich_coaching(
@@ -492,11 +573,11 @@ class GameManager:
         }
 
     async def make_ai_move(self, session_id: str) -> dict:
-        """Ask the configured AI/local policy to make exactly one move.
+        """Ask the configured AI/local engine player to make exactly one move.
 
-        Stockfish is passed as an analysis provider only. The selected move is
-        always returned by the configured language model or the built-in local
-        AI policy, and never by Stockfish.
+        In configured language-model mode, Stockfish supplies the screened
+        candidate set and legality guardrail. In explicit guest mode, the
+        local Stockfish player selects the move.
         """
         state = self._sessions.get(session_id)
         if state is None:

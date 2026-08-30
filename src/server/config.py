@@ -18,11 +18,11 @@ class Settings(BaseSettings):
     )
 
     # LLM (OpenAI-compatible — works with Ollama, OpenRouter, litellm, etc.)
-    # The built-in local policy is the instant no-login default. Hosted and
+    # The built-in local engine player is the instant no-login default. Hosted and
     # local model providers can be selected from the browser's AI setup menu.
     llm_provider: str = "local"
     llm_base_url: str = ""
-    llm_model: str = "local-policy-v1"
+    llm_model: str = "stockfish-local-v1"
     llm_api_key: str | None = None
     llm_timeout: float = 30.0
     llm_effort: str = "auto"

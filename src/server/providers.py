@@ -39,10 +39,22 @@ class ProviderPreset:
 
 PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
     ProviderPreset(
-        "local", "Free local AI (no key)", "builtin",
-        "", "local-policy-v1", False,
-        help="Instant guest mode: a built-in legal chess policy and board-aware coach. No API key, login, or network required.",
+        "local", "Free local engine-backed player (no key)", "builtin",
+        "", "stockfish-local-v1", False,
+        help="Instant guest mode: local Stockfish chooses a legal, tactically screened move. No API key, login, or network required. The chat coach remains a lightweight local explainer.",
         effort_options=("auto",),
+    ),
+    ProviderPreset(
+        "gemini", "Google Gemini free tier (API key)", "gemini",
+        "https://generativelanguage.googleapis.com", "gemini-2.5-flash", True,
+        help="Google AI Studio offers a free API tier for limited use. Create a Gemini API key and paste it here; the key stays in this process only.",
+        effort_options=("auto", "low", "medium", "high"),
+    ),
+    ProviderPreset(
+        "groq", "Groq free tier (API key)", "openai-compatible",
+        "https://api.groq.com/openai", "openai/gpt-oss-120b", True,
+        help="Fast hosted inference with a free developer allowance. Create a Groq API key and paste it here; provider limits apply.",
+        effort_options=("auto", "low", "medium", "high"),
     ),
     ProviderPreset(
         "deepseek", "DeepSeek API key", "openai-compatible",
@@ -102,7 +114,7 @@ class ProviderConfig:
     provider: str = "local"
     kind: str = "builtin"
     base_url: str = ""
-    model: str = "local-policy-v1"
+    model: str = "stockfish-local-v1"
     api_key: str | None = None
     effort: str = "auto"
 
@@ -274,6 +286,54 @@ async def _anthropic(
         return text or None
 
 
+async def _gemini(
+    config: ProviderConfig,
+    messages: list[dict[str, Any]],
+    timeout: float,
+) -> str | None:
+    """Call Gemini's REST generateContent endpoint without an SDK dependency."""
+    if not config.api_key:
+        return None
+    system_parts = [
+        str(message.get("content", ""))
+        for message in messages
+        if message.get("role") == "system"
+    ]
+    contents: list[dict[str, Any]] = []
+    for message in messages:
+        role = message.get("role")
+        if role not in {"user", "assistant"}:
+            continue
+        contents.append({
+            "role": "model" if role == "assistant" else "user",
+            "parts": [{"text": str(message.get("content", ""))}],
+        })
+    payload: dict[str, Any] = {
+        "contents": contents,
+        "generationConfig": {"maxOutputTokens": 1200},
+    }
+    if system_parts:
+        payload["systemInstruction"] = {"parts": [{"text": "\n\n".join(system_parts)}]}
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(
+            f"{config.base_url.rstrip('/')}/v1beta/models/{config.model}:generateContent",
+            json=payload,
+            headers={"x-goog-api-key": config.api_key, "content-type": "application/json"},
+        )
+        response.raise_for_status()
+        data = response.json()
+        candidates = data.get("candidates", [])
+        if not candidates:
+            return None
+        parts = candidates[0].get("content", {}).get("parts", [])
+        text = "\n".join(
+            str(part.get("text", ""))
+            for part in parts
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
+        ).strip()
+        return text or None
+
+
 def _codex_text(stdout: str) -> str | None:
     """Extract the final agent message from Codex JSONL output."""
     final: str | None = None
@@ -362,6 +422,14 @@ async def _cli(
         process.kill()
         await process.wait()
         raise RuntimeError(f"{preset.label} timed out")
+    except asyncio.CancelledError:
+        # ``asyncio.wait_for`` cancels this coroutine when a request-level
+        # timeout fires. Do not leave a Codex/Claude child process running in
+        # the background after the browser has already given up.
+        if process.returncode is None:
+            process.kill()
+        await process.wait()
+        raise
     if process.returncode != 0:
         detail = stderr.decode("utf-8", errors="replace").strip()
         raise RuntimeError(detail or f"{preset.label} exited with code {process.returncode}")
@@ -383,6 +451,8 @@ async def chat_with_provider(
             return None
         if config.kind == "anthropic":
             return await _anthropic(config, messages, timeout)
+        if config.kind == "gemini":
+            return await _gemini(config, messages, timeout)
         if config.kind in {"codex-cli", "claude-cli"}:
             return await _cli(config, messages, timeout)
         return await _openai_compatible(config, messages, timeout)

@@ -415,9 +415,9 @@ async def game_move(req: MoveRequest):
 async def game_ai_move(req: AIMoveRequest):
     """Ask the AI to make the pending opponent move.
 
-    This endpoint deliberately has no Stockfish fallback. Stockfish remains an
-    analysis/legality reference only; the result must come from a language
-    model or the built-in no-key local AI policy.
+    This endpoint deliberately has no silent Stockfish substitution in a
+    configured language-model mode. The result comes from the selected model,
+    or from the explicitly selected no-key local engine player.
     """
     try:
         return await games.make_ai_move(req.session_id)

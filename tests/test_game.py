@@ -63,7 +63,7 @@ def test_make_move(client):
     assert ai_response.status_code == 200
     ai_data = ai_response.json()
     assert ai_data["opponent_move_uci"] is not None
-    assert ai_data["opponent_move_method"] in ("local", "llm")
+    assert ai_data["opponent_move_method"] in ("local", "local-engine", "llm")
     assert " w " in ai_data["fen"]
 
 

@@ -13,7 +13,7 @@ class TestSettings:
         settings = Settings(_env_file=None)
         assert settings.llm_provider == "local"
         assert settings.llm_base_url == ""
-        assert settings.llm_model == "local-policy-v1"
+        assert settings.llm_model == "stockfish-local-v1"
 
     def test_minimal_config(self, monkeypatch):
         """A hosted or local provider can still be configured explicitly."""
