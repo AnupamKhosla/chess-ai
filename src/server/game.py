@@ -16,6 +16,7 @@ from server.game_tree import build_coaching_tree
 from server.knowledge import query_knowledge
 from server.llm import ChessTeacher
 from server.local_ai import local_coach_reply
+from server.openings import identify_opening, opening_context
 from server.opponent import select_opponent_move
 from server.rag import ChessRAG
 from server.report import serialize_report
@@ -91,6 +92,37 @@ def _history_san(board: chess.Board) -> list[str]:
         moves.append(replay.san(move))
         replay.push(move)
     return moves
+
+
+def _opening_aware_fallback(
+    board_after: chess.Board,
+    board_before: chess.Board,
+    player_san: str,
+    coaching_data: CoachingResponse,
+    best_move_uci: str | None,
+) -> str | None:
+    """Explain a recognized opening before giving the engine-only verdict."""
+    opening = identify_opening(board_after)
+    if opening is None:
+        return None
+    best_san = "the engine's alternative"
+    if best_move_uci:
+        try:
+            best_san = board_before.san(chess.Move.from_uci(best_move_uci))
+        except (ValueError, chess.IllegalMoveError):
+            pass
+    quality = coaching_data.quality.value
+    verdict = (
+        "Stockfish currently considers the move sound."
+        if quality == "good"
+        else f"Stockfish currently classifies this position as a {quality}; its top move is {best_san}."
+    )
+    return (
+        f"This is the {opening.name}: {player_san} appears in a real opening idea "
+        f"({opening.move_prefix}), "
+        f"not an accidental pawn push. {opening.intent} {verdict} "
+        "Treat the engine result as a concrete position-specific warning, not as proof that the gambit itself is nonsense."
+    )
 
 
 class GameManager:
@@ -257,14 +289,27 @@ class GameManager:
                 opponent_rating=state.opponent_rating,
                 playing_style=state.opponent_style,
                 response_mode=response_mode if response_mode in {"fast", "deep"} else "fast",
+                opening_context=opening_context(state.board),
             )
             if response:
                 response_source = "ai"
         if not response:
-            response = local_coach_reply(
-                message, state.board, opponent_rating=state.opponent_rating
-            )
-            response_source = "local"
+            if provider_id == "local":
+                response = local_coach_reply(
+                    message, state.board, opponent_rating=state.opponent_rating
+                )
+                response_source = "local"
+            else:
+                provider_label = (
+                    self._teacher.provider_info().get("label", provider_id)
+                    if self._teacher is not None else provider_id
+                )
+                response = (
+                    f"{provider_label} did not respond. No local coach was substituted, "
+                    "so I will not pretend this came from the selected AI. Check the "
+                    "provider connection and send your question again."
+                )
+                response_source = "unavailable"
 
         state.chat_history.extend([
             {"role": "user", "text": message},
@@ -308,12 +353,17 @@ class GameManager:
                 n=self._rag_top_k,
             )
 
-        # Serialize report
-        prompt = serialize_report(
-            tree,
-            quality=coaching_data.quality.value,
-            cp_loss=coaching_data.severity,
-            rag_context=rag_context,
+        # Serialize report and add deterministic opening context. The model
+        # must know that 1.e4 e5 2.f4 is the King's Gambit before discussing
+        # the apparent weakness of the f-pawn.
+        prompt = (
+            f"Opening context: {opening_context(board)}\n\n"
+            + serialize_report(
+                tree,
+                quality=coaching_data.quality.value,
+                cp_loss=coaching_data.severity,
+                rag_context=rag_context,
+            )
         )
 
         # Build full debug prompt (system + user) if teacher is available
@@ -388,6 +438,7 @@ class GameManager:
         prompt = f"""Give a concise, concrete review of the student's move.
 
 Student move: {player_san} ({player_move_uci})
+Opening context: {opening_context(board_after)}
 Position before move FEN: {board_before.fen()}
 Position after move FEN: {board_after.fen()}
 Engine evaluation before: {eval_text(eval_before)}
@@ -397,9 +448,12 @@ Deterministic move classification: {coaching_data.quality.value}
 Tactical facts after the move: {coaching_data.tactics_summary or 'none reported'}
 
 Explain what the student should have checked, whether the move is sound, and
-one concrete human takeaway. Use only the supplied facts. Keep it to 2-4
-sentences and do not invent a line or claim a sacrifice is intentional unless
-the facts support it."""
+one concrete human takeaway. If an opening is recognized, name it in the first
+sentence and explain the opening purpose before discussing engine risk. Do not
+describe a thematic gambit as an unexplained pawn blunder. Distinguish a
+theoretical risk from a concrete tactical oversight. Use only the supplied
+facts. Keep it to 2-4 sentences and do not invent a line or claim a sacrifice
+is intentional unless the facts support it."""
         response = await self._teacher.explain_move(
             prompt,
             coach=coach_name,
@@ -508,6 +562,12 @@ the facts support it."""
                 ),
                 source="stockfish",
             )
+
+        opening_fallback = _opening_aware_fallback(
+            board, board_before, player_san, coaching_data, best_move_uci
+        )
+        if opening_fallback:
+            coaching_data.message = opening_fallback
 
         # Fast review still calls the selected LLM with a small grounded
         # prompt. Only the expensive game-tree/RAG pass is deferred.

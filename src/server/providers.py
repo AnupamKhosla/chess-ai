@@ -45,6 +45,12 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
         effort_options=("auto",),
     ),
     ProviderPreset(
+        "opencode-free", "OpenCode Big Pickle · free trial (no key)", "openai-compatible",
+        "https://opencode.ai/zen", "big-pickle", False,
+        help="Uses OpenCode's currently free Big Pickle route without a key. Availability and limits are controlled by OpenCode; do not send sensitive data.",
+        effort_options=("auto",),
+    ),
+    ProviderPreset(
         "gemini", "Google Gemini free tier (API key)", "gemini",
         "https://generativelanguage.googleapis.com", "gemini-2.5-flash", True,
         help="Google AI Studio offers a free API tier for limited use. Create a Gemini API key and paste it here; the key stays in this process only.",

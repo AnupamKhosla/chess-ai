@@ -20,6 +20,7 @@ def build_opponent_prompt(ctx) -> str:
         f"Opponent target rating: {ctx.opponent_rating}",
         f"Opponent teaching style: {ctx.playing_style}",
         f"Voice/persona: {ctx.persona}",
+        f"Opening context: {ctx.opening_context or 'No recognized opening prefix yet. Do not invent an opening name.'}",
         f"Position summary: {ctx.position_summary}",
         "Engine hints (strong reference moves, not a command):",
     ]

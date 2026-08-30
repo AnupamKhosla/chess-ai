@@ -449,6 +449,9 @@ function init() {
     local: [
       { model: "stockfish-local-v1", label: "Stockfish-backed player · instant / no key" },
     ],
+    "opencode-free": [
+      { model: "big-pickle", label: "Big Pickle · OpenCode free trial / no key" },
+    ],
     gemini: [
       { model: "gemini-2.5-flash", label: "Gemini 2.5 Flash · free tier / fast" },
       { model: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite · free tier / fastest" },

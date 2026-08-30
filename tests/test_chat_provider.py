@@ -20,7 +20,7 @@ def test_provider_public_metadata_never_contains_api_key():
 
 def test_provider_catalog_includes_subscription_and_local_options():
     ids = {item["id"] for item in provider_catalog(ProviderConfig())}
-    assert {"gemini", "groq", "deepseek", "openai", "anthropic", "ollama", "lmstudio", "codex", "claude"} <= ids
+    assert {"opencode-free", "gemini", "groq", "deepseek", "openai", "anthropic", "ollama", "lmstudio", "codex", "claude"} <= ids
 
 
 @pytest.mark.asyncio
@@ -50,6 +50,49 @@ async def test_chat_keeps_continuous_history():
         {"role": "user", "text": "What should I watch for?"},
         {"role": "assistant", "text": "I remember: 0 earlier messages."},
     ]
+
+
+@pytest.mark.asyncio
+async def test_chat_passes_opening_context_to_the_ai():
+    class FakeTeacher:
+        def __init__(self):
+            self.calls = []
+
+        async def chat_conversation(self, **kwargs):
+            self.calls.append(kwargs)
+            return "That is the King's Gambit: you are offering the f-pawn for initiative."
+
+        def provider_info(self):
+            return {"provider": "codex", "model": "default", "has_api_key": False}
+
+    teacher = FakeTeacher()
+    manager = GameManager(engine=None, teacher=teacher)  # type: ignore[arg-type]
+    session_id, _, _ = manager.new_game()
+    manager.get_game(session_id).board.push_san("e4")  # type: ignore[union-attr]
+    manager.get_game(session_id).board.push_san("e5")  # type: ignore[union-attr]
+    manager.get_game(session_id).board.push_san("f4")  # type: ignore[union-attr]
+
+    await manager.chat(session_id, "What opening did I play?")
+
+    assert "King's Gambit" in teacher.calls[0]["opening_context"]
+
+
+@pytest.mark.asyncio
+async def test_configured_ai_chat_does_not_fall_back_to_local_copy():
+    class OfflineTeacher:
+        async def chat_conversation(self, **kwargs):
+            return None
+
+        def provider_info(self):
+            return {"provider": "codex", "label": "ChatGPT / Codex login"}
+
+    manager = GameManager(engine=None, teacher=OfflineTeacher())  # type: ignore[arg-type]
+    session_id, _, _ = manager.new_game()
+
+    result = await manager.chat(session_id, "Explain this position")
+
+    assert result["source"] == "unavailable"
+    assert "No local coach was substituted" in result["message"]
 
 
 @pytest.mark.asyncio

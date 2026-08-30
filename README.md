@@ -46,7 +46,7 @@ Position analyzer → Game tree → Coaching report
 The browser has one continuous coach room, while the server adapts the
 conversation to the selected connection. Open the menu and choose one of:
 
-- Google Gemini free tier, Groq free tier, DeepSeek, OpenAI, Anthropic, or OpenRouter with an API key
+- OpenCode's currently free Big Pickle trial without a key, or Google Gemini free tier, Groq free tier, DeepSeek, OpenAI, Anthropic, or OpenRouter with an API key
 - Built-in local Stockfish-backed player works immediately with no key; Ollama or LM Studio are also supported
 - ChatGPT/Codex login through an installed, authenticated `codex` CLI
 - Claude subscription through an installed, authenticated `claude` CLI
@@ -103,10 +103,12 @@ For deep architectural details, see [guide/DESIGN.md](guide/DESIGN.md).
    EMBED_MODEL=nomic-embed-text
    ```
 
-   For a free hosted trial, choose **Google Gemini free tier** or **Groq free
-   tier** in **AI settings**, create your own provider key, and paste it into
-   the local app. OpenRouter's Free Router is another option. Keys are held in
-   memory only; the app does not ship or share a public key.
+   For a no-key hosted trial, choose **OpenCode Big Pickle** in **AI settings**.
+   It is a temporary, rate-limited free route, so do not send private data. For
+   a more durable free tier, choose **Google Gemini free tier** or **Groq free
+   tier**, create your own provider key, and paste it into the local app.
+   OpenRouter's Free Router is another option. Keys are held in memory only;
+   the app does not ship or share a public key.
 
 4. **Build the frontend:**
    ```bash

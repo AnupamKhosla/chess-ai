@@ -35,6 +35,7 @@ class OpponentMoveContext:
     playing_style: str = "balanced"
     persona: str = "Anna Cramling"
     legal_moves: list[str] = field(default_factory=list)
+    opening_context: str = ""
 
 
 class ChessTeacher:
@@ -199,6 +200,7 @@ class ChessTeacher:
         opponent_rating: int = 1200,
         playing_style: str = "balanced",
         response_mode: str = "fast",
+        opening_context: str = "",
     ) -> str | None:
         """Continue a board-aware coaching conversation.
 
@@ -233,6 +235,7 @@ move or idea and avoid a long opening lecture unless the student asks for it.
             f"Moves so far: {' '.join(moves[-120:]) if moves else '(starting position)'}\n"
             f"Opponent target rating: {opponent_rating}\n"
             f"Opponent teaching style: {playing_style}\n"
+            f"Opening context: {opening_context or 'No recognized opening prefix yet.'}\n"
             f"Student coaching profile: {elo_profile}\n"
             f"Response mode: {response_mode}"
         )

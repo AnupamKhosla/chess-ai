@@ -16,6 +16,7 @@ from server.analysis import GamePhase, analyze, detect_game_phase
 from server.descriptions import describe_position_from_report
 from server.engine import EngineProtocol, MoveInfo
 from server.llm import ChessTeacher, OpponentMoveContext
+from server.openings import opening_context
 
 
 # Centipawn thresholds per phase — moves within this delta of the best
@@ -256,6 +257,7 @@ async def select_opponent_move(
             playing_style=playing_style,
             persona=persona,
             legal_moves=[board.san(move) for move in legal_moves],
+            opening_context=opening_context(board),
         )
         result = await teacher.select_teaching_move(ctx)
     except Exception as exc:  # provider failures must not change the player

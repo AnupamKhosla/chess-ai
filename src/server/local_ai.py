@@ -1,10 +1,9 @@
 """A tiny, no-key local chess player.
 
-This is deliberately independent from Stockfish.  It is the always-available
-guest opponent used when no conversational model is configured (or when a
-configured model fails).  It is a lightweight policy, not an evaluation
-engine: it prefers forcing moves, development, king safety, central play, and
-the requested style/rating.
+This is deliberately independent from Stockfish. It is only the explicitly
+selected no-key guest chat explainer; configured language-model failures are
+reported to the user instead of being silently routed here. It is a lightweight
+policy, not an evaluation engine.
 
 The boundary matters: Stockfish may explain a position, but this module is the
 only built-in component allowed to choose the computer's move.
