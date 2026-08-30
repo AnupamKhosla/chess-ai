@@ -232,6 +232,7 @@ class MoveRequest(BaseModel):
     session_id: str
     move: str
     verbosity: str = "normal"
+    fast_review: bool = True
 
 
 class AIMoveRequest(BaseModel):
@@ -395,7 +396,12 @@ async def new_game(req: NewGameRequest = NewGameRequest()):
 @app.post("/api/game/move")
 async def game_move(req: MoveRequest):
     try:
-        result = await games.make_move(req.session_id, req.move, verbosity=req.verbosity)
+        result = await games.make_move(
+            req.session_id,
+            req.move,
+            verbosity=req.verbosity,
+            fast_review=req.fast_review,
+        )
     except KeyError:
         raise HTTPException(status_code=404, detail="Session not found")
     except ValueError as e:

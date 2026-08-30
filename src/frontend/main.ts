@@ -217,11 +217,11 @@ function init() {
   headerTools.appendChild(sidebarToggleBtn);
 
   const hamburgerBtn = document.createElement("button");
-  hamburgerBtn.className = "hamburger-btn";
-  hamburgerBtn.setAttribute("aria-label", "Menu");
-  for (let i = 0; i < 3; i++) {
-    hamburgerBtn.appendChild(document.createElement("span"));
-  }
+  hamburgerBtn.className = "settings-btn";
+  hamburgerBtn.type = "button";
+  hamburgerBtn.textContent = "AI settings ⚙";
+  hamburgerBtn.title = "Open AI, theme, and coaching settings";
+  hamburgerBtn.setAttribute("aria-label", "Open AI settings");
   headerTools.appendChild(hamburgerBtn);
 
   // Hamburger menu dropdown
@@ -444,6 +444,10 @@ function init() {
   let activeProviderModel = "local-policy-v1";
   let activeProviderEffort = "auto";
   let syncAgentStatus: ((label: string) => void) | null = null;
+  let aiTurnState: { awaiting: boolean; thinking: boolean; error?: string | null } = {
+    awaiting: false,
+    thinking: false,
+  };
 
   const modelChoices: Record<string, Array<{ model: string; label: string }>> = {
     local: [
@@ -864,7 +868,10 @@ function init() {
   chatInput.rows = 2;
   chatInput.placeholder = "Ask about this position… (Enter to send)";
   chatInput.setAttribute("aria-label", "Message your chess coach");
-  chatComposer.appendChild(chatInput);
+  const chatInputWrap = document.createElement("div");
+  chatInputWrap.className = "chat-input-wrap";
+  chatInputWrap.appendChild(chatInput);
+  chatComposer.appendChild(chatInputWrap);
 
   const voiceOutputBtn = document.createElement("button");
   voiceOutputBtn.className = "voice-btn";
@@ -880,23 +887,96 @@ function init() {
   voiceInputBtn.title = "Speak a question to your coach";
   voiceInputBtn.setAttribute("aria-label", "Talk to the chess coach");
   coachHeaderActions.insertBefore(voiceInputBtn, quickLoginBtn);
+  const composerVoiceBtn = document.createElement("button");
+  composerVoiceBtn.className = "composer-talk-btn";
+  composerVoiceBtn.type = "button";
+  composerVoiceBtn.textContent = "🎙";
+  composerVoiceBtn.title = "Talk to the chess coach";
+  composerVoiceBtn.setAttribute("aria-label", "Talk to the chess coach");
+  chatInputWrap.appendChild(composerVoiceBtn);
 
   let voiceOutputEnabled = localStorage.getItem("chess-teacher-voice") === "true";
   let audioContext: AudioContext | null = null;
   let recognition: SpeechRecognitionLike | null = null;
+  let lastSpokenText = "";
+  let speechRate = Number(localStorage.getItem("chess-teacher-speech-rate") || "1");
+  if (!Number.isFinite(speechRate)) speechRate = 1;
+  let availableVoices: SpeechSynthesisVoice[] = [];
 
   function syncVoiceButton() {
     voiceOutputBtn.textContent = voiceOutputEnabled ? "🔊 Voice on" : "🔊 Start voice";
     voiceOutputBtn.classList.toggle("active", voiceOutputEnabled);
   }
 
-  function speakCoach(text: string) {
-    if (!voiceOutputEnabled || !("speechSynthesis" in window)) return;
+  function chooseHumanVoice(): SpeechSynthesisVoice | null {
+    const savedName = localStorage.getItem("chess-teacher-voice-name");
+    if (savedName) {
+      const saved = availableVoices.find((voice) => voice.name === savedName);
+      if (saved) return saved;
+    }
+    const preferred = [
+      "Samantha", "Karen", "Alex", "Google US English", "Microsoft Aria",
+      "Microsoft Jenny", "Daniel", "Moira",
+    ];
+    for (const name of preferred) {
+      const voice = availableVoices.find((candidate) =>
+        candidate.name.toLowerCase().includes(name.toLowerCase()) &&
+        candidate.lang.toLowerCase().startsWith("en"));
+      if (voice) return voice;
+    }
+    return availableVoices.find((voice) => voice.lang.toLowerCase().startsWith("en")) || null;
+  }
+
+  function syncVoiceChoices() {
+    availableVoices = window.speechSynthesis?.getVoices?.() || [];
+    if (!voiceSelect) return;
+    const selected = localStorage.getItem("chess-teacher-voice-name") || "auto";
+    voiceSelect.innerHTML = "";
+    const automatic = document.createElement("option");
+    automatic.value = "auto";
+    automatic.textContent = "Natural voice · automatic";
+    voiceSelect.appendChild(automatic);
+    const voices = availableVoices
+      .filter((voice) => voice.lang.toLowerCase().startsWith("en"))
+      .slice(0, 16);
+    for (const voice of voices) {
+      const option = document.createElement("option");
+      option.value = voice.name;
+      option.textContent = voice.name;
+      voiceSelect.appendChild(option);
+    }
+    voiceSelect.value = voices.some((voice) => voice.name === selected) ? selected : "auto";
+  }
+
+  function syncSpeechControls() {
+    repeatSpeechBtn.disabled = !lastSpokenText;
+    const speaking = "speechSynthesis" in window && window.speechSynthesis.speaking;
+    pauseSpeechBtn.disabled = !speaking && !lastSpokenText;
+    pauseSpeechBtn.textContent = speaking && window.speechSynthesis.paused ? "▶ Resume" : "⏸ Pause";
+    stopSpeechBtn.disabled = !speaking;
+    speechRateLabel.textContent = `${speechRate.toFixed(1)}×`;
+  }
+
+  function speakText(text: string, force = false) {
+    if ((!voiceOutputEnabled && !force) || !("speechSynthesis" in window)) return;
+    const cleanText = text.replace(/[*_#`]/g, "").slice(0, 1200);
+    if (!cleanText) return;
+    lastSpokenText = cleanText;
     window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text.replace(/[*_#`]/g, "").slice(0, 1200));
-    utterance.rate = 1.05;
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    const voice = chooseHumanVoice();
+    if (voice) utterance.voice = voice;
+    utterance.rate = speechRate;
     utterance.pitch = 1;
+    utterance.volume = 1;
+    utterance.onend = syncSpeechControls;
+    utterance.onerror = syncSpeechControls;
     window.speechSynthesis.speak(utterance);
+    syncSpeechControls();
+  }
+
+  function speakCoach(text: string) {
+    speakText(text);
   }
 
   function playMoveSound(kind: "player" | "ai") {
@@ -921,6 +1001,79 @@ function init() {
   }
 
   syncVoiceButton();
+  const voiceControls = document.createElement("div");
+  voiceControls.className = "voice-controls";
+  const repeatSpeechBtn = document.createElement("button");
+  repeatSpeechBtn.className = "speech-control";
+  repeatSpeechBtn.type = "button";
+  repeatSpeechBtn.textContent = "↻ Repeat";
+  repeatSpeechBtn.title = "Repeat the latest coach message aloud";
+  voiceControls.appendChild(repeatSpeechBtn);
+  const pauseSpeechBtn = document.createElement("button");
+  pauseSpeechBtn.className = "speech-control";
+  pauseSpeechBtn.type = "button";
+  pauseSpeechBtn.textContent = "⏸ Pause";
+  pauseSpeechBtn.title = "Pause or resume spoken coaching";
+  voiceControls.appendChild(pauseSpeechBtn);
+  const stopSpeechBtn = document.createElement("button");
+  stopSpeechBtn.className = "speech-control";
+  stopSpeechBtn.type = "button";
+  stopSpeechBtn.textContent = "■ Stop";
+  stopSpeechBtn.title = "Stop spoken coaching";
+  voiceControls.appendChild(stopSpeechBtn);
+  const speechRateLabel = document.createElement("span");
+  speechRateLabel.className = "speech-rate-label";
+  speechRateLabel.textContent = "1.0×";
+  voiceControls.appendChild(speechRateLabel);
+  const speechRateInput = document.createElement("input");
+  speechRateInput.className = "speech-rate";
+  speechRateInput.type = "range";
+  speechRateInput.min = "0.7";
+  speechRateInput.max = "1.4";
+  speechRateInput.step = "0.1";
+  speechRateInput.value = speechRate.toFixed(1);
+  speechRateInput.title = "Speech speed";
+  speechRateInput.setAttribute("aria-label", "Speech speed");
+  voiceControls.appendChild(speechRateInput);
+  const voiceSelect = document.createElement("select");
+  voiceSelect.className = "speech-voice-select";
+  voiceSelect.title = "Choose the installed voice used by the coach";
+  voiceSelect.setAttribute("aria-label", "Coach voice");
+  voiceControls.appendChild(voiceSelect);
+  chatComposer.appendChild(voiceControls);
+
+  repeatSpeechBtn.addEventListener("click", () => {
+    if (lastSpokenText) speakText(lastSpokenText, true);
+  });
+  pauseSpeechBtn.addEventListener("click", () => {
+    if (!("speechSynthesis" in window)) return;
+    if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
+      window.speechSynthesis.pause();
+    } else if (window.speechSynthesis.paused) {
+      window.speechSynthesis.resume();
+    } else if (lastSpokenText) {
+      speakText(lastSpokenText, true);
+    }
+    setTimeout(syncSpeechControls, 0);
+  });
+  stopSpeechBtn.addEventListener("click", () => {
+    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    syncSpeechControls();
+  });
+  speechRateInput.addEventListener("input", () => {
+    speechRate = Number(speechRateInput.value);
+    localStorage.setItem("chess-teacher-speech-rate", speechRate.toFixed(1));
+    syncSpeechControls();
+  });
+  voiceSelect.addEventListener("change", () => {
+    if (voiceSelect.value === "auto") localStorage.removeItem("chess-teacher-voice-name");
+    else localStorage.setItem("chess-teacher-voice-name", voiceSelect.value);
+  });
+  if ("speechSynthesis" in window) {
+    syncVoiceChoices();
+    window.speechSynthesis.addEventListener?.("voiceschanged", syncVoiceChoices);
+  }
+  syncSpeechControls();
   voiceOutputBtn.addEventListener("click", () => {
     voiceOutputEnabled = !voiceOutputEnabled;
     localStorage.setItem("chess-teacher-voice", String(voiceOutputEnabled));
@@ -942,7 +1095,17 @@ function init() {
     voiceInputBtn.title = "Voice input is not supported by this browser";
     voiceInputBtn.disabled = true;
     voiceInputBtn.textContent = "🎙 Unavailable";
+    composerVoiceBtn.title = "Voice input is not supported by this browser";
+    composerVoiceBtn.disabled = true;
+    composerVoiceBtn.textContent = "🎙";
   } else {
+    const syncTalkButtons = (listening: boolean) => {
+      voiceInputBtn.textContent = listening ? "⏹ Stop" : "🎙 Talk";
+      voiceInputBtn.classList.toggle("active", listening);
+      composerVoiceBtn.textContent = listening ? "⏹" : "🎙";
+      composerVoiceBtn.classList.toggle("active", listening);
+    };
+    composerVoiceBtn.addEventListener("click", () => voiceInputBtn.click());
     voiceInputBtn.addEventListener("click", () => {
       if (recognition) {
         recognition.stop();
@@ -953,8 +1116,7 @@ function init() {
       recognition.interimResults = false;
       recognition.lang = navigator.language || "en-US";
       recognition.onstart = () => {
-        voiceInputBtn.textContent = "⏺ Listening…";
-        voiceInputBtn.classList.add("active");
+        syncTalkButtons(true);
       };
       recognition.onresult = (event: any) => {
         const transcript = event.results?.[0]?.[0]?.transcript?.trim();
@@ -968,8 +1130,7 @@ function init() {
       };
       recognition.onend = () => {
         recognition = null;
-        voiceInputBtn.textContent = "🎙 Talk";
-        voiceInputBtn.classList.remove("active");
+        syncTalkButtons(false);
       };
       recognition.start();
     });
@@ -987,6 +1148,21 @@ function init() {
   chatSend.textContent = "Send";
   chatActions.appendChild(chatSend);
   chatComposer.appendChild(chatActions);
+
+  const chatMoveActions = document.createElement("div");
+  chatMoveActions.className = "chat-move-actions";
+  const chatAiMoveBtn = document.createElement("button");
+  chatAiMoveBtn.className = "chat-ai-move-btn";
+  chatAiMoveBtn.type = "button";
+  chatAiMoveBtn.textContent = "▶ Play AI move";
+  chatAiMoveBtn.disabled = true;
+  chatAiMoveBtn.title = "Let the selected AI play the pending opponent move";
+  chatMoveActions.appendChild(chatAiMoveBtn);
+  const chatMoveHint = document.createElement("span");
+  chatMoveHint.className = "chat-move-hint";
+  chatMoveHint.textContent = "After your move, the AI waits here.";
+  chatMoveActions.appendChild(chatMoveHint);
+  chatComposer.appendChild(chatMoveActions);
   coachColumn.appendChild(chatComposer);
 
   // This button configures the local Codex/ChatGPT subscription directly in
@@ -1298,16 +1474,6 @@ function init() {
     }
   });
 
-  // --- Footer ---
-  const footer = document.createElement("footer");
-  footer.className = "app-footer";
-  root.appendChild(footer);
-
-  const engineStatus = document.createElement("span");
-  engineStatus.className = "engine-status";
-  engineStatus.textContent = "Engine: loading";
-  footer.appendChild(engineStatus);
-
   // --- Promotion UI ---
   function showPromotionChooser(
     isWhite: boolean,
@@ -1561,6 +1727,8 @@ function init() {
     thinkingBubble.classList.add("typing");
     chatSend.disabled = true;
     chatInput.disabled = true;
+    const playAfterReply = aiTurnState.awaiting && !aiTurnState.thinking &&
+      /\b(your move|play (?:your|the|a)?\s*move|make (?:your|the|an?)?\s*move|go ahead|respond|reply|move mate|your turn)\b/i.test(message);
     try {
       const response = await sendChat(
         sessionId,
@@ -1578,6 +1746,10 @@ function init() {
             ? "Free local coach"
             : "Coach",
       );
+      if (playAfterReply) {
+        chatMoveHint.textContent = "Playing the move you asked for…";
+        await gc.requestAiMove();
+      }
     } catch (error) {
       thinkingBubble.remove();
       const detail = error instanceof Error ? error.message : "Chat request failed";
@@ -1736,20 +1908,28 @@ function init() {
   });
 
   function updateAiMoveButton(state: { awaiting: boolean; thinking: boolean; error?: string | null }) {
+    aiTurnState = state;
+    const buttons = [aiMoveBtn, chatAiMoveBtn];
     if (state.thinking) {
-      aiMoveBtn.disabled = true;
-      aiMoveBtn.textContent = "AI thinking…";
+      for (const button of buttons) {
+        button.disabled = true;
+        button.textContent = "AI thinking…";
+      }
+      chatMoveHint.textContent = "The AI is calculating a teaching move…";
       statusDisplay.textContent = "AI is thinking…";
       statusDisplay.classList.add("thinking");
       return;
     }
     statusDisplay.classList.remove("thinking");
     if (state.awaiting) {
-      aiMoveBtn.disabled = false;
-      aiMoveBtn.textContent = "Make AI move";
+      for (const button of buttons) {
+        button.disabled = false;
+        button.textContent = "▶ Play AI move";
+      }
+      chatMoveHint.textContent = "Your move is reviewed. Let the AI play its reply.";
       statusDisplay.textContent = state.error
         ? `AI did not move: ${state.error}`
-        : "Your move is reviewed. Ask the AI to play.";
+        : "Your move is reviewed. The AI is ready to play.";
       if (state.error) {
         addChatBubble(
           "assistant",
@@ -1758,14 +1938,20 @@ function init() {
         );
       }
     } else {
-      aiMoveBtn.disabled = true;
-      aiMoveBtn.textContent = "Your turn";
+      for (const button of buttons) {
+        button.disabled = true;
+        button.textContent = "Your turn";
+      }
+      chatMoveHint.textContent = "After your move, the AI waits here.";
       if (!state.error) statusDisplay.textContent = "Your turn";
     }
   }
 
   gc.setAiTurnCallback(updateAiMoveButton);
   aiMoveBtn.addEventListener("click", () => {
+    void gc.requestAiMove();
+  });
+  chatAiMoveBtn.addEventListener("click", () => {
     void gc.requestAiMove();
   });
   updateAiMoveButton({ awaiting: false, thinking: false });
@@ -1884,27 +2070,32 @@ function init() {
   });
 
   // Initialize browser engine
+  const staticDemo = window.location.hostname.endsWith(".github.io") ||
+    window.location.search.includes("demo=1");
+  const stockfishPath = staticDemo
+    ? "./vendor/stockfish/stockfish.js"
+    : "/static/vendor/stockfish/stockfish.js";
+
   engine
-    .init("/static/vendor/stockfish/stockfish.js")
+    .init(stockfishPath)
     .then(() => {
-      engineStatus.textContent = "Engine: ready";
-      engineStatus.classList.add("connected");
+      console.info("Browser Stockfish ready");
       engine.evaluateMultiPV(gc.fen(), updateMultiEval);
     })
     .catch((err) => {
       console.warn("Browser Stockfish unavailable:", err);
       evalDisplay.textContent = "Eval: (engine unavailable)";
-      engineStatus.textContent = "Engine: unavailable";
-      engineStatus.classList.add("error");
     });
 
   // Remote engine worker for server-dispatched analysis
-  const remoteEngine = new BrowserEngine();
-  remoteEngine.init("/static/vendor/stockfish/stockfish.js").then(() => {
-    const remote = new RemoteUCI(remoteEngine);
-    remote.connect();
-    console.log("[RemoteUCI] Remote engine worker initialized");
-  });
+  if (!staticDemo) {
+    const remoteEngine = new BrowserEngine();
+    remoteEngine.init(stockfishPath).then(() => {
+      const remote = new RemoteUCI(remoteEngine);
+      remote.connect();
+      console.log("[RemoteUCI] Remote engine worker initialized");
+    });
+  }
 }
 
 document.addEventListener("DOMContentLoaded", init);

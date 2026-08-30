@@ -224,9 +224,10 @@ export class GameController {
     // Send the move for review. The server intentionally does not move the
     // opponent here; the user must explicitly ask the AI to play.
     this.setThinking(true);
+    this.onAiTurn?.({ awaiting: false, thinking: true });
     try {
       const verbosity = localStorage.getItem("chess-teacher-verbosity") || "normal";
-      const resp = await sendMove(this.sessionId, moveUci, verbosity);
+      const resp = await sendMove(this.sessionId, moveUci, verbosity, true);
       this.handleCoaching(resp.coaching);
       this.awaitingAiMove = resp.ai_turn !== false && !resp.opponent_move_uci;
       this.onAiTurn?.({ awaiting: this.awaitingAiMove, thinking: false });

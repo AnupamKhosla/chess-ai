@@ -366,7 +366,11 @@ class GameManager:
         }
 
     async def make_move(
-        self, session_id: str, move_uci: str, verbosity: str = "normal",
+        self,
+        session_id: str,
+        move_uci: str,
+        verbosity: str = "normal",
+        fast_review: bool = False,
     ) -> dict:
         """Apply and review the player's move, then wait for the AI action.
 
@@ -440,7 +444,7 @@ class GameManager:
             )
 
         # Enrich coaching with two-pass pipeline + RAG + LLM (timeout so game never freezes).
-        if coaching_data is not None:
+        if coaching_data is not None and not fast_review:
             try:
                 await asyncio.wait_for(
                     self._enrich_coaching(
