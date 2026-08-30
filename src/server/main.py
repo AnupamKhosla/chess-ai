@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import RedirectResponse, Response
+from starlette.responses import FileResponse, Response
 
 from server.analysis import analyze
 from server.config import Settings
@@ -255,7 +255,8 @@ class ThemeGenerateRequest(BaseModel):
 
 @app.get("/")
 async def root():
-    return RedirectResponse(url="/static/index.html")
+    """Serve the app shell at the normal localhost URL."""
+    return FileResponse(os.path.join(static_dir, "index.html"))
 
 
 @app.get("/api/health")
