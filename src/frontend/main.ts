@@ -444,10 +444,6 @@ function init() {
   let activeProviderModel = "local-policy-v1";
   let activeProviderEffort = "auto";
   let syncAgentStatus: ((label: string) => void) | null = null;
-  let aiTurnState: { awaiting: boolean; thinking: boolean; error?: string | null } = {
-    awaiting: false,
-    thinking: false,
-  };
 
   const modelChoices: Record<string, Array<{ model: string; label: string }>> = {
     local: [
@@ -1727,8 +1723,6 @@ function init() {
     thinkingBubble.classList.add("typing");
     chatSend.disabled = true;
     chatInput.disabled = true;
-    const playAfterReply = aiTurnState.awaiting && !aiTurnState.thinking &&
-      /\b(your move|play (?:your|the|a)?\s*move|make (?:your|the|an?)?\s*move|go ahead|respond|reply|move mate|your turn)\b/i.test(message);
     try {
       const response = await sendChat(
         sessionId,
@@ -1746,10 +1740,6 @@ function init() {
             ? "Free local coach"
             : "Coach",
       );
-      if (playAfterReply) {
-        chatMoveHint.textContent = "Playing the move you asked for…";
-        await gc.requestAiMove();
-      }
     } catch (error) {
       thinkingBubble.remove();
       const detail = error instanceof Error ? error.message : "Chat request failed";
@@ -1908,7 +1898,6 @@ function init() {
   });
 
   function updateAiMoveButton(state: { awaiting: boolean; thinking: boolean; error?: string | null }) {
-    aiTurnState = state;
     const buttons = [aiMoveBtn, chatAiMoveBtn];
     if (state.thinking) {
       for (const button of buttons) {

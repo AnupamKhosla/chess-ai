@@ -214,7 +214,7 @@ function chooseDemoMove(board: Chess): { san: string; uci: string; reason: strin
 function demoCoachReply(message: string, session: DemoSession): string {
   const turn = session.board.turn() === "w" ? "White" : "Black";
   if (/\b(your move|play|move|reply|respond)\b/i.test(message) && turn === "Black") {
-    return "I’m ready to play the black move. Use **▶ Play AI move** below, or simply say “your move” and I’ll play it for you.";
+    return "I’m ready to play the black move. Press **▶ Play AI move** below when you want me to make it. I won’t move the board from chat alone.";
   }
   if (/\b(why|plan|thinking|defend|defense|defence)\b/i.test(message)) {
     return "Use a human checklist: first scan the opponent’s checks, captures, and threats; then compare one forcing move with one improving move. It is " + turn + " to move. I’ll keep the explanation tied to this board.";
