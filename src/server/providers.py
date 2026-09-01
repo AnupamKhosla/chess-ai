@@ -115,12 +115,38 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
 _PRESETS = {preset.id: preset for preset in PROVIDER_PRESETS}
 
 
+class ProviderUnavailableError(RuntimeError):
+    """A provider request failed without exposing secrets to the UI.
+
+    The caller can use ``user_message`` to report the selected provider and a
+    useful status (for example HTTP 429 or timeout) without leaking response
+    bodies, request headers, or API keys.
+    """
+
+    def __init__(
+        self,
+        provider: str,
+        detail: str,
+        status_code: int | None = None,
+    ):
+        self.provider = provider
+        self.status_code = status_code
+        preset = preset_for(provider)
+        self.label = preset.label if preset else provider
+        self.detail = detail
+        super().__init__(self.user_message)
+
+    @property
+    def user_message(self) -> str:
+        return f"{self.label} unavailable ({self.detail})."
+
+
 @dataclass
 class ProviderConfig:
-    provider: str = "local"
-    kind: str = "builtin"
-    base_url: str = ""
-    model: str = "stockfish-local-v1"
+    provider: str = "opencode-free"
+    kind: str = "openai-compatible"
+    base_url: str = "https://opencode.ai/zen"
+    model: str = "big-pickle"
     api_key: str | None = None
     effort: str = "auto"
 
@@ -449,8 +475,10 @@ async def chat_with_provider(
 ) -> str | None:
     """Send a chat request through the selected provider.
 
-    Network/CLI failures are logged and converted to ``None`` so Stockfish
-    coaching still works when the language model is unavailable.
+    Built-in local mode returns ``None`` because it has no chat endpoint.
+    Transport and provider failures raise ``ProviderUnavailableError`` so the
+    caller can distinguish an unavailable selected AI from an intentional
+    local-player mode.
     """
     try:
         if config.kind == "builtin":
@@ -462,6 +490,23 @@ async def chat_with_provider(
         if config.kind in {"codex-cli", "claude-cli"}:
             return await _cli(config, messages, timeout)
         return await _openai_compatible(config, messages, timeout)
-    except (httpx.HTTPError, KeyError, ValueError, TypeError, IndexError, RuntimeError) as exc:
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code if exc.response is not None else None
+        detail = f"HTTP {status_code}" if status_code is not None else "HTTP error"
+        logger.warning("Coach provider %s unavailable: %s", config.provider, detail)
+        raise ProviderUnavailableError(config.provider, detail, status_code) from exc
+    except httpx.TimeoutException as exc:
+        logger.warning("Coach provider %s timed out", config.provider)
+        raise ProviderUnavailableError(config.provider, "timed out") from exc
+    except httpx.RequestError as exc:
+        logger.warning("Coach provider %s network failure: %s", config.provider, exc)
+        raise ProviderUnavailableError(config.provider, "network error") from exc
+    except httpx.HTTPError as exc:
+        logger.warning("Coach provider %s request failed: %s", config.provider, exc)
+        raise ProviderUnavailableError(config.provider, "request failed") from exc
+    except (KeyError, ValueError, TypeError, IndexError) as exc:
+        logger.warning("Coach provider %s returned an invalid response: %s", config.provider, exc)
+        raise ProviderUnavailableError(config.provider, "invalid response") from exc
+    except RuntimeError as exc:
         logger.warning("Coach provider %s unavailable: %s", config.provider, exc)
-        return None
+        raise ProviderUnavailableError(config.provider, str(exc) or "request failed") from exc

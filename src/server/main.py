@@ -111,6 +111,12 @@ async def _init_stockfish() -> None:
 
 
 async def _init_chromadb() -> None:
+    if settings.rag_top_k <= 0:
+        _set_status("chromadb", "done", "RAG disabled (RAG_TOP_K=0)")
+        return
+    if not settings.effective_embed_base_url:
+        _set_status("chromadb", "done", "RAG disabled (no embedding endpoint configured)")
+        return
     _set_status("chromadb", "running", "Starting ChromaDB...")
     try:
         await rag.start()

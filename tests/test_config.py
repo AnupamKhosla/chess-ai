@@ -5,15 +5,16 @@ from server.config import Settings
 
 
 class TestSettings:
-    def test_local_defaults_without_provider_setup(self, monkeypatch):
-        """The app can start with the instant no-login local AI defaults."""
+    def test_free_ai_defaults_without_provider_setup(self, monkeypatch):
+        """The app defaults to the keyless free conversational AI."""
         monkeypatch.delenv("LLM_BASE_URL", raising=False)
         monkeypatch.delenv("LLM_MODEL", raising=False)
         monkeypatch.delenv("LLM_PROVIDER", raising=False)
         settings = Settings(_env_file=None)
-        assert settings.llm_provider == "local"
-        assert settings.llm_base_url == ""
-        assert settings.llm_model == "stockfish-local-v1"
+        assert settings.llm_provider == "opencode-free"
+        assert settings.llm_base_url == "https://opencode.ai/zen"
+        assert settings.llm_model == "big-pickle"
+        assert settings.rag_top_k == 0
 
     def test_minimal_config(self, monkeypatch):
         """A hosted or local provider can still be configured explicitly."""

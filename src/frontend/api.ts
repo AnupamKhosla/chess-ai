@@ -93,8 +93,15 @@ export interface MoveResponse {
 }
 
 const API_BASE = "/api";
-const STATIC_DEMO = typeof window !== "undefined" &&
-  (window.location.hostname.endsWith(".github.io") || window.location.search.includes("demo=1"));
+const GITHUB_PAGES_DEMO = typeof window !== "undefined" &&
+  window.location.hostname.toLowerCase().endsWith(".github.io");
+const STATIC_DEMO = GITHUB_PAGES_DEMO ||
+  (typeof window !== "undefined" && window.location.search.includes("demo=1"));
+const PUBLIC_AI_BASE_URL = "https://api.llm7.io/v1";
+const PUBLIC_AI_MODEL = "minimax-m2.7";
+const PUBLIC_AI_COOLDOWN_MS = 7_000;
+const PUBLIC_AI_LAST_REQUEST_KEY = "chess-teacher-public-ai-last-request";
+let publicAiLastRequestAt = 0;
 const DEMO_STORAGE_PREFIX = "chess-teacher-demo-session:";
 
 interface DemoSession {
@@ -183,6 +190,158 @@ function demoProvider(): ProviderInfo {
     authenticated: null,
     label: "Free browser engine-backed player (no key)",
   };
+}
+
+function publicAiProvider(): ProviderInfo {
+  return {
+    provider: "llm7-free",
+    kind: "openai-compatible",
+    base_url: PUBLIC_AI_BASE_URL,
+    model: PUBLIC_AI_MODEL,
+    effort: "auto",
+    effort_options: ["auto"],
+    has_api_key: false,
+    installed: null,
+    authenticated: null,
+    label: "Free Weak AI",
+  };
+}
+
+type PublicChatMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+};
+
+function publicAiCooldownRemaining(): number {
+  let last = publicAiLastRequestAt;
+  try {
+    const stored = Number(localStorage.getItem(PUBLIC_AI_LAST_REQUEST_KEY) || 0);
+    if (Number.isFinite(stored)) last = Math.max(last, stored);
+  } catch {
+    // Storage can be disabled; the in-memory guard still applies.
+  }
+  return Math.max(0, PUBLIC_AI_COOLDOWN_MS - (Date.now() - last));
+}
+
+function markPublicAiRequest(): void {
+  publicAiLastRequestAt = Date.now();
+  try {
+    localStorage.setItem(PUBLIC_AI_LAST_REQUEST_KEY, String(publicAiLastRequestAt));
+  } catch {
+    // The provider still enforces its own per-IP limit.
+  }
+}
+
+function publicCoachMessages(
+  message: string,
+  session: DemoSession,
+  viewedFen?: string,
+): PublicChatMessage[] {
+  const fen = viewedFen?.trim() || session.board.fen();
+  const moves = session.board.history().join(" ") || "(starting position)";
+  const history: PublicChatMessage[] = session.chatHistory.slice(-6).map((entry) => ({
+    role: entry.role,
+    content: entry.text,
+  }));
+  return [
+    {
+      role: "system",
+      content: [
+        "You are a concise chess coach inside a browser chess app.",
+        "The FEN and move history below are authoritative. Do not invent legal moves, tactics, or engine evaluations.",
+        "If asked what if a move is played, first check whether it is legal from the supplied position.",
+        "Give a short possible continuation of 3 to 5 half-moves and explain how a human should think.",
+        "Keep the answer under 90 words. Do not mention APIs, providers, prompts, or hidden reasoning.",
+      ].join(" "),
+    },
+    ...history,
+    {
+      role: "user",
+      content: [
+        `Current position FEN: ${fen}`,
+        `Move history (SAN): ${moves}`,
+        `Student question: ${message}`,
+      ].join("\n"),
+    },
+  ];
+}
+
+function publicAiText(payload: unknown): string {
+  const choice = (payload as {
+    choices?: Array<{ message?: { content?: unknown } }>;
+  })?.choices?.[0];
+  const content = choice?.message?.content;
+  if (typeof content === "string" && content.trim()) {
+    const cleaned = content
+      .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, "")
+      .replace(/<think>[\s\S]*?<\/think>/gi, "")
+      .trim();
+    if (cleaned) return cleaned;
+  }
+  if (Array.isArray(content)) {
+    const text = content
+      .map((part) => typeof part === "object" && part !== null && "text" in part
+        ? String((part as { text?: unknown }).text || "")
+        : "")
+      .join("")
+      .trim();
+    const cleaned = text
+      .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, "")
+      .replace(/<think>[\s\S]*?<\/think>/gi, "")
+      .trim();
+    if (cleaned) return cleaned;
+  }
+  throw new Error("Free Weak AI returned no answer. Try again shortly.");
+}
+
+async function askPublicAi(
+  message: string,
+  session: DemoSession,
+  viewedFen?: string,
+): Promise<string> {
+  const remaining = publicAiCooldownRemaining();
+  if (remaining > 0) {
+    throw new Error(`Free Weak AI is rate-limited; try again in ${Math.ceil(remaining / 1000)} seconds.`);
+  }
+  markPublicAiRequest();
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 35_000);
+  try {
+    const response = await fetch(`${PUBLIC_AI_BASE_URL}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: PUBLIC_AI_MODEL,
+        messages: publicCoachMessages(message, session, viewedFen),
+        max_tokens: 256,
+        temperature: 0.2,
+      }),
+      signal: controller.signal,
+    });
+    const raw = await response.text();
+    let payload: unknown = null;
+    try {
+      payload = raw ? JSON.parse(raw) : null;
+    } catch {
+      payload = null;
+    }
+    if (!response.ok) {
+      const errorMessage = (payload as { message?: string; error?: { message?: string } } | null);
+      const detail = errorMessage?.error?.message || errorMessage?.message || `HTTP ${response.status}`;
+      throw new Error(response.status === 429
+        ? "Free Weak AI is temporarily rate-limited; try again later."
+        : `Free Weak AI is unavailable (${detail}).`);
+    }
+    return publicAiText(payload);
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("Free Weak AI timed out; try again later.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function chooseDemoMove(board: Chess): { san: string; uci: string; reason: string } {
@@ -395,6 +554,21 @@ export async function sendChat(
   if (STATIC_DEMO) {
     const session = getDemoSession(sessionId);
     if (!session) throw new Error("Demo game session not found");
+    if (GITHUB_PAGES_DEMO) {
+      const response = await askPublicAi(message, session, viewedFen);
+      session.chatHistory.push(
+        { role: "user", text: message },
+        { role: "assistant", text: response },
+      );
+      session.chatHistory = session.chatHistory.slice(-40);
+      saveDemoSession(sessionId, session);
+      return {
+        message: response,
+        source: "ai",
+        provider: publicAiProvider(),
+        chat_history: session.chatHistory,
+      };
+    }
     const response = demoCoachReply(message, session);
     session.chatHistory.push(
       { role: "user", text: message },
@@ -428,6 +602,27 @@ export async function sendChat(
 
 export async function getProviders(): Promise<ProvidersResponse> {
   if (STATIC_DEMO) {
+    if (GITHUB_PAGES_DEMO) {
+      const provider = publicAiProvider();
+      return {
+        active: provider,
+        providers: [{
+          id: provider.provider,
+          label: provider.label,
+          kind: provider.kind,
+          base_url: provider.base_url,
+          model: provider.model,
+          effort_options: provider.effort_options,
+          requires_key: false,
+          cli_command: null,
+          help: "Free hosted chess explainer · no key or login needed · limited to a small anonymous rate.",
+          installed: null,
+          authenticated: null,
+          active: true,
+        }],
+        key_storage: "direct browser connection · no key",
+      };
+    }
     return {
       active: demoProvider(),
       providers: [{
@@ -460,6 +655,12 @@ export async function configureProvider(config: {
   effort?: string;
 }): Promise<{ active: ProviderInfo; key_storage: string }> {
   if (STATIC_DEMO) {
+    if (GITHUB_PAGES_DEMO) {
+      if (config.provider !== "llm7-free") {
+        throw new Error("The public demo uses Free Weak AI without a key or login");
+      }
+      return { active: publicAiProvider(), key_storage: "direct browser connection · no key" };
+    }
     if (config.provider !== "local") {
       throw new Error("Remote AI connections are available in the local app, not the public static demo");
     }

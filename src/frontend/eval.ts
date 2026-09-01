@@ -60,6 +60,9 @@ export class BrowserEngine {
   private multiPVLines: Map<number, EvalLine> = new Map();
   private multiPVDepth = 0;
   private ready = false;
+  private searchRunning = false;
+  private stopRequested = false;
+  private queuedSearch: (() => void) | null = null;
 
   /**
    * Load the engine and wait for UCI initialization.
@@ -84,6 +87,8 @@ export class BrowserEngine {
           resolve();
         }
 
+        if (line.startsWith("bestmove")) this.finishSearch();
+
         this.parseLine(line);
       };
 
@@ -103,6 +108,32 @@ export class BrowserEngine {
   /** Whether the engine has completed UCI initialization. */
   isReady(): boolean {
     return this.ready;
+  }
+
+  /**
+   * Stockfish's WASM build must finish its current search before it receives a
+   * new position. Queue the newest request and let the current bestmove mark
+   * the safe hand-off point. We deliberately let the active search finish:
+   * interrupting a deep search while immediately sending a new UCI command is
+   * unstable in the bundled single-threaded WASM build.
+   */
+  private enqueueSearch(start: () => void): void {
+    if (this.searchRunning) {
+      this.queuedSearch = start;
+      return;
+    }
+    this.searchRunning = true;
+    start();
+  }
+
+  /** Mark the current UCI search complete and start the latest queued one. */
+  private finishSearch(): void {
+    if (!this.searchRunning) return;
+    this.searchRunning = false;
+    this.stopRequested = false;
+    const next = this.queuedSearch;
+    this.queuedSearch = null;
+    if (next) queueMicrotask(next);
   }
 
   /**
@@ -173,12 +204,15 @@ export class BrowserEngine {
   evaluate(fen: string, callback: EvalCallback, depth: number = 20): void {
     if (!this.worker || !this.ready) return;
 
-    this.onEval = callback;
-    this.worker.postMessage("stop");
-    this.worker.postMessage("ucinewgame");
-    this.worker.postMessage("isready");
-    this.worker.postMessage(`position fen ${fen}`);
-    this.worker.postMessage(`go depth ${depth}`);
+    this.enqueueSearch(() => {
+      if (!this.worker) return;
+      this.onEval = callback;
+      this.onMultiPV = null;
+      this.worker.postMessage("ucinewgame");
+      this.worker.postMessage("isready");
+      this.worker.postMessage(`position fen ${fen}`);
+      this.worker.postMessage(`go depth ${depth}`);
+    });
   }
 
   /**
@@ -188,15 +222,17 @@ export class BrowserEngine {
   evaluateMultiPV(fen: string, callback: MultiPVCallback, depth: number = 20): void {
     if (!this.worker || !this.ready) return;
 
-    this.onMultiPV = callback;
-    this.onEval = null;
-    this.multiPVLines.clear();
-    this.multiPVDepth = 0;
-    this.worker.postMessage("stop");
-    this.worker.postMessage("ucinewgame");
-    this.worker.postMessage("isready");
-    this.worker.postMessage(`position fen ${fen}`);
-    this.worker.postMessage(`go depth ${depth}`);
+    this.enqueueSearch(() => {
+      if (!this.worker) return;
+      this.onMultiPV = callback;
+      this.onEval = null;
+      this.multiPVLines.clear();
+      this.multiPVDepth = 0;
+      this.worker.postMessage("ucinewgame");
+      this.worker.postMessage("isready");
+      this.worker.postMessage(`position fen ${fen}`);
+      this.worker.postMessage(`go depth ${depth}`);
+    });
   }
 
   /**
@@ -210,41 +246,44 @@ export class BrowserEngine {
         return;
       }
 
-      let lastInfo: EvalInfo | null = null;
-
-      const prevOnMessage = this.worker.onmessage;
-      this.worker.onmessage = (e: MessageEvent) => {
-        const line = typeof e.data === "string" ? e.data : (e.data?.toString?.() ?? "");
-
-        if (line.startsWith("info") && line.includes("score")) {
-          const depthMatch = line.match(/\bdepth (\d+)/);
-          const cpMatch = line.match(/\bscore cp (-?\d+)/);
-          const mateMatch = line.match(/\bscore mate (-?\d+)/);
-          const pvMatch = line.match(/ pv (.+)/);
-          if (depthMatch) {
-            lastInfo = {
-              depth: parseInt(depthMatch[1], 10),
-              scoreCp: cpMatch ? parseInt(cpMatch[1], 10) : null,
-              scoreMate: mateMatch ? parseInt(mateMatch[1], 10) : null,
-              pv: pvMatch ? pvMatch[1].split(" ") : [],
-            };
-          }
+      this.enqueueSearch(() => {
+        if (!this.worker) {
+          reject(new Error("Engine worker stopped"));
+          return;
         }
+        let lastInfo: EvalInfo | null = null;
+        const worker = this.worker;
+        const prevOnMessage = worker.onmessage;
+        worker.onmessage = (e: MessageEvent) => {
+          const line = typeof e.data === "string" ? e.data : (e.data?.toString?.() ?? "");
 
-        if (line.startsWith("bestmove")) {
-          this.worker!.onmessage = prevOnMessage;
-          if (lastInfo) {
-            resolve(lastInfo);
-          } else {
-            reject(new Error("No eval info received"));
+          if (line.startsWith("info") && line.includes("score")) {
+            const depthMatch = line.match(/\bdepth (\d+)/);
+            const cpMatch = line.match(/\bscore cp (-?\d+)/);
+            const mateMatch = line.match(/\bscore mate (-?\d+)/);
+            const pvMatch = line.match(/ pv (.+)/);
+            if (depthMatch) {
+              lastInfo = {
+                depth: parseInt(depthMatch[1], 10),
+                scoreCp: cpMatch ? parseInt(cpMatch[1], 10) : null,
+                scoreMate: mateMatch ? parseInt(mateMatch[1], 10) : null,
+                pv: pvMatch ? pvMatch[1].split(" ") : [],
+              };
+            }
           }
-        }
-      };
 
-      this.worker.postMessage("stop");
-      this.worker.postMessage("setoption name MultiPV value 1");
-      this.worker.postMessage(`position fen ${fen}`);
-      this.worker.postMessage(`go depth ${depth}`);
+          if (line.startsWith("bestmove")) {
+            worker.onmessage = prevOnMessage;
+            if (lastInfo) resolve(lastInfo);
+            else reject(new Error("No eval info received"));
+            this.finishSearch();
+          }
+        };
+
+        worker.postMessage("setoption name MultiPV value 1");
+        worker.postMessage(`position fen ${fen}`);
+        worker.postMessage(`go depth ${depth}`);
+      });
     });
   }
 
@@ -262,51 +301,62 @@ export class BrowserEngine {
       const lines = new Map<number, EvalLine>();
       let currentDepth = 0;
 
-      const prevOnMessage = this.worker.onmessage;
-      this.worker.onmessage = (e: MessageEvent) => {
-        const line = typeof e.data === "string" ? e.data : (e.data?.toString?.() ?? "");
+      this.enqueueSearch(() => {
+        if (!this.worker) {
+          reject(new Error("Engine worker stopped"));
+          return;
+        }
+        const worker = this.worker;
+        const prevOnMessage = worker.onmessage;
+        worker.onmessage = (e: MessageEvent) => {
+          const line = typeof e.data === "string" ? e.data : (e.data?.toString?.() ?? "");
 
-        if (line.startsWith("info") && line.includes("score")) {
-          const depthMatch = line.match(/\bdepth (\d+)/);
-          const cpMatch = line.match(/\bscore cp (-?\d+)/);
-          const mateMatch = line.match(/\bscore mate (-?\d+)/);
-          const pvMatch = line.match(/ pv (.+)/);
-          const mpvMatch = line.match(/\bmultipv (\d+)/);
-          if (depthMatch) {
-            const d = parseInt(depthMatch[1], 10);
-            const pvNum = mpvMatch ? parseInt(mpvMatch[1], 10) : 1;
-            if (pvNum === 1 && d > currentDepth) {
-              lines.clear();
-              currentDepth = d;
-            }
-            if (d === currentDepth) {
-              lines.set(pvNum, {
-                multipv: pvNum,
-                scoreCp: cpMatch ? parseInt(cpMatch[1], 10) : null,
-                scoreMate: mateMatch ? parseInt(mateMatch[1], 10) : null,
-                pv: pvMatch ? pvMatch[1].split(" ") : [],
-              });
+          if (line.startsWith("info") && line.includes("score")) {
+            const depthMatch = line.match(/\bdepth (\d+)/);
+            const cpMatch = line.match(/\bscore cp (-?\d+)/);
+            const mateMatch = line.match(/\bscore mate (-?\d+)/);
+            const pvMatch = line.match(/ pv (.+)/);
+            const mpvMatch = line.match(/\bmultipv (\d+)/);
+            if (depthMatch) {
+              const d = parseInt(depthMatch[1], 10);
+              const pvNum = mpvMatch ? parseInt(mpvMatch[1], 10) : 1;
+              if (pvNum === 1 && d > currentDepth) {
+                lines.clear();
+                currentDepth = d;
+              }
+              if (d === currentDepth) {
+                lines.set(pvNum, {
+                  multipv: pvNum,
+                  scoreCp: cpMatch ? parseInt(cpMatch[1], 10) : null,
+                  scoreMate: mateMatch ? parseInt(mateMatch[1], 10) : null,
+                  pv: pvMatch ? pvMatch[1].split(" ") : [],
+                });
+              }
             }
           }
-        }
 
-        if (line.startsWith("bestmove")) {
-          this.worker!.onmessage = prevOnMessage;
-          resolve(Array.from(lines.values()).sort((a, b) => a.multipv - b.multipv));
-        }
-      };
+          if (line.startsWith("bestmove")) {
+            worker.onmessage = prevOnMessage;
+            resolve(Array.from(lines.values()).sort((a, b) => a.multipv - b.multipv));
+            this.finishSearch();
+          }
+        };
 
-      this.worker.postMessage("stop");
-      this.worker.postMessage(`setoption name MultiPV value ${n}`);
-      this.worker.postMessage("isready");
-      this.worker.postMessage(`position fen ${fen}`);
-      this.worker.postMessage(`go depth ${depth}`);
+        worker.postMessage(`setoption name MultiPV value ${n}`);
+        worker.postMessage("isready");
+        worker.postMessage(`position fen ${fen}`);
+        worker.postMessage(`go depth ${depth}`);
+      });
     });
   }
 
   /** Stop the current search. */
   stop(): void {
-    this.worker?.postMessage("stop");
+    this.queuedSearch = null;
+    if (this.searchRunning && !this.stopRequested) {
+      this.stopRequested = true;
+      this.worker?.postMessage("stop");
+    }
     this.onEval = null;
     this.onMultiPV = null;
   }
@@ -317,5 +367,8 @@ export class BrowserEngine {
     this.worker?.terminate();
     this.worker = null;
     this.ready = false;
+    this.searchRunning = false;
+    this.stopRequested = false;
+    this.queuedSearch = null;
   }
 }

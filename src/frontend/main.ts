@@ -445,12 +445,44 @@ function init() {
   let activeProviderEffort = "auto";
   let syncAgentStatus: ((label: string) => void) | null = null;
 
+  function isFreeWeakProvider(providerId: string): boolean {
+    return providerId === "opencode-free" || providerId === "llm7-free";
+  }
+
+  function displayProviderLabel(providerId: string, label: string): string {
+    // Keep implementation details out of the student-facing UI. The server
+    // still uses the stable provider/model IDs internally.
+    return isFreeWeakProvider(providerId) ? "Free Weak AI" : label;
+  }
+
+  function displayProviderHelp(providerId: string, help: string): string {
+    return isFreeWeakProvider(providerId)
+      ? "Free hosted chess explainer · no key needed · availability and limits may vary."
+      : help;
+  }
+
+  function studentFacingProviderText(text: string): string {
+    return text
+      .replace(/OpenCode Big Pickle · free trial \(no key\)/g, "Free Weak AI")
+      .replace(/Big Pickle/g, "Free Weak AI")
+      .replace(/OpenCode/g, "free hosted provider");
+  }
+
+  function syncProviderFieldVisibility(providerId: string): void {
+    const hideImplementation = isFreeWeakProvider(providerId);
+    providerModelInput.hidden = hideImplementation;
+    providerBaseInput.hidden = hideImplementation;
+  }
+
   const modelChoices: Record<string, Array<{ model: string; label: string }>> = {
     local: [
       { model: "stockfish-local-v1", label: "Stockfish-backed player · instant / no key" },
     ],
     "opencode-free": [
-      { model: "big-pickle", label: "Big Pickle · OpenCode free trial / no key" },
+      { model: "big-pickle", label: "Free Weak AI" },
+    ],
+    "llm7-free": [
+      { model: "minimax-m2.7", label: "Free Weak AI" },
     ],
     gemini: [
       { model: "gemini-2.5-flash", label: "Gemini 2.5 Flash · free tier / fast" },
@@ -562,10 +594,11 @@ function init() {
       : "No key needed for this connection";
     providerKeyInput.disabled = !preset.requires_key;
     providerBaseInput.disabled = preset.kind === "codex-cli" || preset.kind === "claude-cli" || preset.kind === "builtin";
-    providerStatus.textContent = preset.help;
+    providerStatus.textContent = displayProviderHelp(providerId, preset.help);
     if (preset.installed === false) {
       providerStatus.textContent += " CLI not found on this machine.";
     }
+    syncProviderFieldVisibility(providerId);
     syncProviderLoginButton(preset);
   }
 
@@ -573,7 +606,7 @@ function init() {
     try {
       const data = await getProviders();
       providerPresets = data.providers;
-      activeProviderLabel = data.active.label;
+      activeProviderLabel = displayProviderLabel(data.active.provider, data.active.label);
       activeProviderModel = data.active.model;
       activeProviderEffort = data.active.effort;
       syncAgentStatus?.(activeProviderLabel);
@@ -581,20 +614,24 @@ function init() {
       for (const preset of providerPresets) {
         const option = document.createElement("option");
         option.value = preset.id;
-        option.textContent = preset.label;
+        option.textContent = displayProviderLabel(preset.id, preset.label);
         providerSelect.appendChild(option);
       }
       providerSelect.value = data.active.provider;
       providerModelInput.value = data.active.model;
       renderModelChoices(data.active.provider, data.active.model);
+      syncProviderFieldVisibility(data.active.provider);
       const activePreset = providerPresets.find((item) => item.id === data.active.provider);
       if (activePreset) renderEffortChoices(activePreset, data.active.effort);
       providerBaseInput.value = data.active.base_url;
-      providerKeyInput.disabled = data.active.kind === "codex-cli" || data.active.kind === "claude-cli" || data.active.kind === "builtin";
-      providerKeyInput.placeholder = data.active.has_api_key
-        ? "Key already configured (leave blank to clear)"
-        : "API key (held in memory only)";
-      providerStatus.textContent = `${data.active.label} · ${data.active.model} · ${data.active.effort} effort · ${data.key_storage}`;
+      providerKeyInput.disabled = activePreset ? !activePreset.requires_key :
+        data.active.kind === "codex-cli" || data.active.kind === "claude-cli" || data.active.kind === "builtin";
+      providerKeyInput.placeholder = activePreset && !activePreset.requires_key
+        ? "No key needed for this connection"
+        : data.active.has_api_key
+          ? "Key already configured (leave blank to clear)"
+          : "API key (held in memory only)";
+      providerStatus.textContent = `${activeProviderLabel} · ${data.active.effort} effort · ${data.key_storage}`;
       syncProviderLoginButton(
         providerPresets.find((item) => item.id === data.active.provider),
         data.active.authenticated ?? null,
@@ -623,17 +660,17 @@ function init() {
           model: providerModelInput.value.trim() || preset.model,
           effort: providerEffortSelect.value,
         });
-        activeProviderLabel = response.active.label;
+        activeProviderLabel = displayProviderLabel(response.active.provider, response.active.label);
         activeProviderModel = response.active.model;
         activeProviderEffort = response.active.effort;
         syncAgentStatus?.(activeProviderLabel);
-        providerStatus.textContent = `${response.active.label} active · local login selected`;
+        providerStatus.textContent = `${activeProviderLabel} active · local login selected`;
       } else {
         const response = await startProviderLogin(providerId);
         providerStatus.textContent = response.message || "Login started in a browser window.";
       }
     } catch (error) {
-      providerStatus.textContent = error instanceof Error ? error.message : "Login failed";
+        providerStatus.textContent = studentFacingProviderText(error instanceof Error ? error.message : "Login failed");
     } finally {
       providerLoginBtn.disabled = false;
     }
@@ -649,14 +686,14 @@ function init() {
         api_key: providerKeyInput.value.trim() || undefined,
         effort: providerEffortSelect.value,
       });
-      activeProviderLabel = response.active.label;
+      activeProviderLabel = displayProviderLabel(response.active.provider, response.active.label);
       activeProviderModel = response.active.model;
       activeProviderEffort = response.active.effort;
       syncAgentStatus?.(activeProviderLabel);
-      providerStatus.textContent = `${response.active.label} active · key stored in memory only`;
+      providerStatus.textContent = `${activeProviderLabel} active · key stored in memory only`;
       providerKeyInput.value = "";
     } catch (error) {
-      providerStatus.textContent = error instanceof Error ? error.message : "Connection failed";
+      providerStatus.textContent = studentFacingProviderText(error instanceof Error ? error.message : "Connection failed");
     } finally {
       providerSaveBtn.disabled = false;
       providerSaveBtn.textContent = "Use this connection";
@@ -1366,7 +1403,9 @@ function init() {
   const agentStatus = document.createElement("div");
   agentStatus.className = "opponent-agent-status";
   syncAgentStatus = (label: string) => {
-    agentStatus.textContent = `${label} active · only AI can make the opponent move`;
+    agentStatus.textContent = label === "Free Weak AI"
+      ? `${label} coach active · browser Stockfish plays the practice reply`
+      : `${label} active · only AI can make the opponent move`;
     agentStatus.className = "opponent-agent-status ai-active";
     syncAiIdentity(label);
   };
@@ -1406,11 +1445,19 @@ function init() {
     activeProviderModel = model;
     activeProviderEffort = effort;
     const local = label.toLowerCase().includes("engine-backed") || model === "local-policy-v1" || model === "stockfish-local-v1" || model === "stockfish-browser-v1";
+    const browserFreeWeak = model === "minimax-m2.7";
+    const freeWeak = label === "Free Weak AI" || model === "big-pickle" || browserFreeWeak;
     aiIdentityText.textContent = local
       ? `Free local engine-backed player · ${model} · instant · no key`
+      : freeWeak
+        ? "Free Weak AI · short chess explanations"
       : `${label} · ${model} · ${effort} effort`;
     aiIdentityNote.textContent = local
       ? "Stockfish chooses the move locally or in the browser. No language model is connected in guest mode."
+      : freeWeak
+        ? browserFreeWeak
+          ? "Free AI explains the position; browser Stockfish plays the practice reply on GitHub Pages."
+          : "Free AI explains the move; Stockfish remains analysis-only and cannot play it by itself."
       : "Selected AI chooses the move; Stockfish is analysis-only and cannot play it.";
   }
 
@@ -1744,7 +1791,7 @@ function init() {
       thinkingBubble.remove();
       addChatBubble(
         "assistant",
-        response.message,
+        studentFacingProviderText(response.message),
         response.source === "ai"
           ? "AI coach"
           : response.source === "local"
@@ -1753,7 +1800,7 @@ function init() {
       );
     } catch (error) {
       thinkingBubble.remove();
-      const detail = error instanceof Error ? error.message : "Chat request failed";
+      const detail = studentFacingProviderText(error instanceof Error ? error.message : "Chat request failed");
       addChatBubble("assistant", `I couldn't answer: ${detail}`);
     } finally {
       chatSend.disabled = false;
@@ -1860,14 +1907,20 @@ function init() {
   }
 
   // --- Initialize ---
+  const staticDemo = window.location.hostname.endsWith(".github.io") ||
+    window.location.search.includes("demo=1");
   const engine = new BrowserEngine();
+  // The public demo shares one serialized worker for continuous analysis and
+  // the explicit AI move. Browser WASM builds can fail when multiple
+  // Stockfish workers search concurrently; BrowserEngine queues hand-offs.
+  const aiMoveEngine = staticDemo ? engine : null;
 
   const board = createBoard(boardWrap, (orig, dest) => {
     playMoveSound("player");
     gc.handleMove(orig, dest);
   });
 
-  const gc = new GameController(board, engine);
+  const gc = new GameController(board, engine, aiMoveEngine);
 
   gc.setMoveListCallback(renderMoveList);
   gc.setMultiPVCallback(updateMultiEval);
@@ -1927,13 +1980,13 @@ function init() {
         button.textContent = "▶ Play AI move";
       }
       chatMoveHint.textContent = "Your move is reviewed. Let the AI play its reply.";
-      statusDisplay.textContent = state.error
-        ? `AI did not move: ${state.error}`
+        statusDisplay.textContent = state.error
+        ? `AI did not move: ${studentFacingProviderText(state.error)}`
         : "Your move is reviewed. The AI is ready to play.";
       if (state.error) {
         addChatBubble(
           "assistant",
-          `No opponent move was made. ${state.error} Stockfish remains analysis-only. Try **Make AI move** again or choose another AI provider.`,
+          `No opponent move was made. ${studentFacingProviderText(state.error)} Stockfish remains analysis-only. Try **Make AI move** again or choose another AI provider.`,
           "AI unavailable",
         );
       }
@@ -2070,8 +2123,6 @@ function init() {
   });
 
   // Initialize browser engine
-  const staticDemo = window.location.hostname.endsWith(".github.io") ||
-    window.location.search.includes("demo=1");
   const stockfishPath = staticDemo
     ? "./vendor/stockfish/stockfish.js"
     : "/static/vendor/stockfish/stockfish.js";

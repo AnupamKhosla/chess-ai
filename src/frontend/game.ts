@@ -80,6 +80,7 @@ export class GameController {
   private game: Chess;
   private board: Api;
   private engine: BrowserEngine | null;
+  private aiMoveEngine: BrowserEngine | null;
   private onMoveList: MoveListCallback | null = null;
   private onPromotion: PromotionCallback | null = null;
   private onEval: EvalCallback | null = null;
@@ -100,10 +101,15 @@ export class GameController {
   private opponentRating = 1200;
   private coachName: string = "Anna Cramling";
 
-  constructor(board: Api, engine: BrowserEngine | null) {
+  constructor(
+    board: Api,
+    engine: BrowserEngine | null,
+    aiMoveEngine: BrowserEngine | null = engine,
+  ) {
     this.game = new Chess();
     this.board = board;
     this.engine = engine;
+    this.aiMoveEngine = aiMoveEngine;
     this.syncBoard();
   }
 
@@ -256,10 +262,14 @@ export class GameController {
         window.location.search.includes("demo=1");
       let browserEngineMove: string | undefined;
       if (staticDemo) {
-        if (!this.engine?.isReady()) {
+        const moveEngine = this.aiMoveEngine;
+        if (!moveEngine?.isReady()) {
           throw new Error("Browser Stockfish is still loading; try again in a moment.");
         }
-        const lines = await this.engine.evaluateMultiPVAsync(this.game.fen(), 1, 16);
+        // Keep the live analysis worker separate from the move-selection
+        // worker. The single-threaded WASM build can otherwise receive a new
+        // UCI search while it is still reporting the previous one.
+        const lines = await moveEngine.evaluateMultiPVAsync(this.game.fen(), 1, 16);
         browserEngineMove = lines[0]?.pv[0];
         if (!browserEngineMove) throw new Error("Browser Stockfish did not return a move.");
       }
@@ -294,6 +304,7 @@ export class GameController {
     // avoids stale Stockfish callbacks racing the new session on quick setting
     // changes (rating/persona/theme).
     this.engine?.stop();
+    if (this.aiMoveEngine !== this.engine) this.aiMoveEngine?.stop();
     this.game = new Chess();
     this.playerColor = "w";
     this.thinking = false;

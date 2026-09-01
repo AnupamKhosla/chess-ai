@@ -304,8 +304,14 @@ class GameManager:
                     self._teacher.provider_info().get("label", provider_id)
                     if self._teacher is not None else provider_id
                 )
+                provider_error = None
+                if self._teacher is not None:
+                    error_getter = getattr(self._teacher, "last_provider_error", None)
+                    if callable(error_getter):
+                        provider_error = error_getter()
+                detail = provider_error or f"{provider_label} did not respond."
                 response = (
-                    f"{provider_label} did not respond. No local coach was substituted, "
+                    f"{detail} No local coach was substituted, "
                     "so I will not pretend this came from the selected AI. Check the "
                     "provider connection and send your question again."
                 )

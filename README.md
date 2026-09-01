@@ -41,12 +41,29 @@ Position analyzer → Game tree → Coaching report
 
 **Stack:** Python 3.14, FastAPI/uvicorn, python-chess, Stockfish, ChromaDB, SQLite, modern JavaScript frontend (chessground, snabbdom, stockfish.wasm)
 
+### GitHub Pages live mode
+
+The published `*.github.io` build is usable without a Python server, account, or
+API key. Stockfish runs locally in the browser, while the chat coach uses a
+small anonymous free language-model endpoint directly from the browser:
+
+- **Free Weak AI** — MiniMax M2.7 through LLM7's OpenAI-compatible endpoint
+- no login or key; the anonymous service currently allows about 10 requests per
+  minute (with an hourly cap) and can be temporarily unavailable
+- the browser sends the current FEN, SAN move history, and the student's
+  question; failures are shown honestly instead of being replaced by fake AI
+
+This public route is intentionally limited to short explanations. The local
+FastAPI app remains the full Stockfish-plus-provider architecture described
+below.
+
 ### AI connections
 
-The browser has one continuous coach room, while the server adapts the
+The browser has one continuous coach room, while the local server adapts the
 conversation to the selected connection. Open the menu and choose one of:
 
-- OpenCode's currently free Big Pickle trial without a key, or Google Gemini free tier, Groq free tier, DeepSeek, OpenAI, Anthropic, or OpenRouter with an API key
+- On the live GitHub Pages build, **Free Weak AI** is the no-login browser chat connection
+- In the local app, Google Gemini free tier, Groq free tier, DeepSeek, OpenAI, Anthropic, OpenRouter, or other configured providers can be selected
 - Built-in local Stockfish-backed player works immediately with no key; Ollama or LM Studio are also supported
 - ChatGPT/Codex login through an installed, authenticated `codex` CLI
 - Claude subscription through an installed, authenticated `claude` CLI

@@ -14,7 +14,12 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from server.providers import ProviderConfig, chat_with_provider
+from server.providers import (
+    ProviderConfig,
+    ProviderUnavailableError,
+    chat_with_provider,
+    preset_for,
+)
 from server.prompts import (
     OPPONENT_SYSTEM_PROMPT,
     build_coaching_system_prompt,
@@ -60,6 +65,7 @@ class ChessTeacher:
             effort=effort,
         )
         self._timeout = timeout
+        self._last_provider_error: ProviderUnavailableError | None = None
 
     def configure(
         self,
@@ -79,6 +85,7 @@ class ChessTeacher:
             api_key=api_key,
             effort=effort,
         )
+        self._last_provider_error = None
 
     def provider_info(self) -> dict:
         """Return safe connection metadata suitable for the browser UI."""
@@ -87,6 +94,10 @@ class ChessTeacher:
     def provider_config(self) -> ProviderConfig:
         """Return the active config for internal catalog/status queries."""
         return self._config
+
+    def last_provider_error(self) -> str | None:
+        """Return a safe, user-facing description of the last failed request."""
+        return self._last_provider_error.user_message if self._last_provider_error else None
 
     def _build_system_prompt(
         self,
@@ -226,8 +237,12 @@ persona.
         if response_mode == "fast":
             system += """
 
-For fast conversation, answer in 1-3 short paragraphs. Lead with the concrete
-move or idea and avoid a long opening lecture unless the student asks for it.
+For fast conversation, answer in roughly 50-100 words, usually one compact
+paragraph. Lead with the concrete move or idea and avoid a long opening lecture
+unless the student asks for it. If the student asks "what if [move]", use the
+engine-backed candidate continuation supplied in the position context when
+available; otherwise say that a variation must be calculated before claiming
+what happens. Never invent a line just to sound decisive.
 """
         position = (
             f"Current FEN: {fen}\n"
@@ -254,7 +269,18 @@ move or idea and avoid a long opening lecture unless the student asks for it.
     ) -> str | None:
         """Send to the currently selected provider adapter."""
         t = timeout if timeout is not None else self._timeout
-        return await chat_with_provider(self._config, messages, timeout=t)
+        self._last_provider_error = None
+        preset = preset_for(self._config.provider)
+        if preset and preset.requires_key and not self._config.api_key:
+            self._last_provider_error = ProviderUnavailableError(
+                self._config.provider, "an API key is required"
+            )
+            return None
+        try:
+            return await chat_with_provider(self._config, messages, timeout=t)
+        except ProviderUnavailableError as exc:
+            self._last_provider_error = exc
+            return None
 
 
 def _parse_move_selection(text: str) -> tuple[str, str] | None:
