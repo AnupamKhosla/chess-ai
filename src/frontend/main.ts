@@ -482,7 +482,7 @@ function init() {
       { model: "big-pickle", label: "Free Weak AI" },
     ],
     "llm7-free": [
-      { model: "minimax-m2.7", label: "Free Weak AI" },
+      { model: "mistral-Nemo-Instruct-2407", label: "Free Weak AI" },
     ],
     gemini: [
       { model: "gemini-2.5-flash", label: "Gemini 2.5 Flash · free tier / fast" },
@@ -1445,7 +1445,7 @@ function init() {
     activeProviderModel = model;
     activeProviderEffort = effort;
     const local = label.toLowerCase().includes("engine-backed") || model === "local-policy-v1" || model === "stockfish-local-v1" || model === "stockfish-browser-v1";
-    const browserFreeWeak = model === "minimax-m2.7";
+    const browserFreeWeak = model === "mistral-Nemo-Instruct-2407";
     const freeWeak = label === "Free Weak AI" || model === "big-pickle" || browserFreeWeak;
     aiIdentityText.textContent = local
       ? `Free local engine-backed player · ${model} · instant · no key`

@@ -98,7 +98,7 @@ const GITHUB_PAGES_DEMO = typeof window !== "undefined" &&
 const STATIC_DEMO = GITHUB_PAGES_DEMO ||
   (typeof window !== "undefined" && window.location.search.includes("demo=1"));
 const PUBLIC_AI_BASE_URL = "https://api.llm7.io/v1";
-const PUBLIC_AI_MODEL = "minimax-m2.7";
+const PUBLIC_AI_MODEL = "mistral-Nemo-Instruct-2407";
 const PUBLIC_AI_COOLDOWN_MS = 7_000;
 const PUBLIC_AI_LAST_REQUEST_KEY = "chess-teacher-public-ai-last-request";
 let publicAiLastRequestAt = 0;
@@ -314,7 +314,7 @@ async function askPublicAi(
       body: JSON.stringify({
         model: PUBLIC_AI_MODEL,
         messages: publicCoachMessages(message, session, viewedFen),
-        max_tokens: 256,
+        max_tokens: 160,
         temperature: 0.2,
       }),
       signal: controller.signal,

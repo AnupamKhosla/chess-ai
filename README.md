@@ -47,7 +47,8 @@ The published `*.github.io` build is usable without a Python server, account, or
 API key. Stockfish runs locally in the browser, while the chat coach uses a
 small anonymous free language-model endpoint directly from the browser:
 
-- **Free Weak AI** — MiniMax M2.7 through LLM7's OpenAI-compatible endpoint
+- **Free Weak AI** — a fast hosted chess explainer through LLM7's
+  OpenAI-compatible endpoint
 - no login or key; the anonymous service currently allows about 10 requests per
   minute (with an hourly cap) and can be temporarily unavailable
 - the browser sends the current FEN, SAN move history, and the student's
