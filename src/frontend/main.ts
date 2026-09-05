@@ -928,6 +928,155 @@ function init() {
   coachColumn.className = "coach-column";
   layout.appendChild(coachColumn);
 
+  // --- Coach dock: the coach as a presence, not a panel ---
+  // Original motif: a pawn fused with a neural node — human game, AI mind.
+  const coachDock = document.createElement("div");
+  coachDock.className = "coach-dock";
+  const coachAvatar = document.createElement("span");
+  coachAvatar.className = "coach-avatar";
+  coachAvatar.innerHTML =
+    `<svg viewBox="0 0 40 40" width="34" height="34" aria-hidden="true">` +
+    `<circle cx="20" cy="9" r="5" fill="none" stroke="currentColor" stroke-width="2.4"/>` +
+    `<path d="M13 20c1.5-3.5 4-5 7-5s5.5 1.5 7 5l2.5 6h-19z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/>` +
+    `<rect x="10" y="28.5" width="20" height="3.4" rx="1.7" fill="currentColor"/>` +
+    `<circle cx="6" cy="14" r="1.8" fill="currentColor"/><circle cx="34" cy="14" r="1.8" fill="currentColor"/>` +
+    `<circle cx="6" cy="26" r="1.8" fill="currentColor"/><circle cx="34" cy="26" r="1.8" fill="currentColor"/>` +
+    `<line x1="7.5" y1="15" x2="13" y2="18" stroke="currentColor" stroke-width="1.2"/>` +
+    `<line x1="32.5" y1="15" x2="27" y2="18" stroke="currentColor" stroke-width="1.2"/>` +
+    `</svg>`;
+  const coachMeta = document.createElement("div");
+  coachMeta.className = "coach-meta";
+  const coachNameEl = document.createElement("div");
+  coachNameEl.className = "coach-name";
+  const coachStatusEl = document.createElement("div");
+  coachStatusEl.className = "coach-status";
+  const liveDot = document.createElement("span");
+  liveDot.className = "live-dot";
+  coachStatusEl.append(liveDot, document.createTextNode("watching…"));
+  coachMeta.append(coachNameEl, coachStatusEl);
+  coachDock.append(coachAvatar, coachMeta);
+  coachColumn.appendChild(coachDock);
+  const coachOffer = document.createElement("div");
+  coachOffer.className = "coach-offer";
+  coachOffer.hidden = true;
+  coachColumn.appendChild(coachOffer);
+
+  function coachDisplayName(): string {
+    try {
+      const full = personaSelect.value || savedCoach;
+      const words = full.split(" ").filter(Boolean);
+      if (words.length === 0) return "Coach";
+      return /^(gm|im|fm|cm|wgm)$/i.test(words[0]) && words.length > 1 ? words[1] : words[0];
+    } catch {
+      return "Coach";
+    }
+  }
+
+  function setCoachStatus(text: string) {
+    coachStatusEl.replaceChildren(liveDot, document.createTextNode(text));
+  }
+
+  // --- Coach commentary: lively, human, never the same twice ---
+  // Strictly factual inputs (the coded ply flags), human texture on top.
+  let commentFlip = Math.floor(Math.random() * 997);
+  function pickLine<T>(items: T[]): T {
+    commentFlip += 1;
+    return items[commentFlip % items.length];
+  }
+
+  function narratePly(
+    ply: { san: string; uci: string; check: boolean; checkmate: boolean; capture: boolean; castle: boolean },
+    index: number,
+    total: number,
+    verdict: string,
+  ): { text: string; mood: "chat" | "sharp" | "verdict" } {
+    const last = index === total - 1;
+    const tail = last ? ` ${verdict}` : "";
+    if (ply.checkmate) {
+      return {
+        text: pickLine([`${ply.san} — and that's mate!`, `There it is — ${ply.san}. Checkmate.`]),
+        mood: "sharp",
+      };
+    }
+    if (ply.check) {
+      return {
+        text: `${pickLine(["Look —", "Watch —", "See it?", "Oh!"])} ${ply.san}, check!${last ? tail : ""}`,
+        mood: "sharp",
+      };
+    }
+    if (ply.capture) {
+      return {
+        text: `${pickLine(["Takes —", "Grabs —", "Snaps it off —", "Eats —"])} ${ply.san}, on ${ply.uci.slice(2, 4)}.${last ? tail : ""}`,
+        mood: "sharp",
+      };
+    }
+    if (ply.castle) {
+      return {
+        text: `${ply.san} — king tucked away.${last ? tail : ""}`,
+        mood: "chat",
+      };
+    }
+    return {
+      text: `${pickLine(["", "Look — ", "Now — ", "Next — ", "And — "])}${ply.san}.${last ? tail : ""}`,
+      mood: last ? "verdict" : "chat",
+    };
+  }
+
+  // --- Proactive offers: the coach taps you on the shoulder ---
+  let lastOfferPly = -100;
+  function showOffer(text: string) {
+    coachOffer.innerHTML = "";
+    const bubble = document.createElement("span");
+    bubble.textContent = text;
+    const showBtn = document.createElement("button");
+    showBtn.className = "quick-login-btn";
+    showBtn.type = "button";
+    showBtn.textContent = "▶ Show me";
+    showBtn.addEventListener("click", () => {
+      coachOffer.hidden = true;
+      void openExplorer();
+    });
+    const laterBtn = document.createElement("button");
+    laterBtn.className = "quick-login-btn";
+    laterBtn.type = "button";
+    laterBtn.textContent = "Not now";
+    laterBtn.addEventListener("click", () => {
+      coachOffer.hidden = true;
+      setCoachStatus("watching…");
+    });
+    coachOffer.append(bubble, showBtn, laterBtn);
+    coachOffer.hidden = false;
+    setCoachStatus("has an idea…");
+    speakText(text, false, "offer");
+  }
+
+  function maybeOfferIdea(coaching: CoachingData) {
+    if (explorer || document.hidden) return;
+    let ply = 0;
+    try {
+      ply = gc.getCurrentPly();
+    } catch {
+      return;
+    }
+    if (ply - lastOfferPly < 8) return;
+    const hot = coaching.quality === "mistake" || coaching.quality === "blunder" ||
+      coaching.quality === "brilliant";
+    if (!hot && ply - lastOfferPly < 12) return;
+    lastOfferPly = ply;
+    let lastSan = "";
+    try {
+      const hist = gc.history();
+      lastSan = hist.length > 0 ? hist[hist.length - 1] : "";
+    } catch {
+      lastSan = "";
+    }
+    showOffer(
+      hot && lastSan
+        ? `Hmm, ${lastSan} — there's something here. Want me to show you?`
+        : "This position has an idea worth seeing — want the tour?",
+    );
+  }
+
   const coachHeader = document.createElement("div");
   coachHeader.className = "coach-header";
   const coachLabel = document.createElement("div");
@@ -983,6 +1132,7 @@ function init() {
   }
   personaRow.appendChild(personaSelect);
   coachColumn.appendChild(personaRow);
+  coachNameEl.textContent = coachDisplayName();
 
   const responseModeRow = document.createElement("div");
   responseModeRow.className = "chat-persona-row";
@@ -1108,17 +1258,23 @@ function init() {
       const saved = availableVoices.find((voice) => voice.name === savedName);
       if (saved) return saved;
     }
-    const preferred = [
-      "Samantha", "Karen", "Alex", "Google US English", "Microsoft Aria",
-      "Microsoft Jenny", "Daniel", "Moira",
-    ];
-    for (const name of preferred) {
-      const voice = availableVoices.find((candidate) =>
-        candidate.name.toLowerCase().includes(name.toLowerCase()) &&
-        candidate.lang.toLowerCase().startsWith("en"));
-      if (voice) return voice;
-    }
-    return availableVoices.find((voice) => voice.lang.toLowerCase().startsWith("en")) || null;
+    // Score voices like a casting director: natural/neural/premium system
+    // voices first, robotic/espeak/compact ones last.
+    const scored = availableVoices
+      .filter((voice) => voice.lang.toLowerCase().startsWith("en"))
+      .map((voice) => {
+        const name = voice.name.toLowerCase();
+        let score = 0;
+        if (/samantha|aria|jenny|guy|zira|david|mark|siri|karen|daniel|moira|tessa|fiona/.test(name)) score += 4;
+        if (/google/.test(name)) score += 3;
+        if (/natural|neural|premium|enhanced|studio/.test(name)) score += 5;
+        if (/compact|robot|espeak|sp inj|whisper/.test(name)) score -= 6;
+        if (voice.localService) score += 1;
+        if (voice.lang.toLowerCase().startsWith("en-us")) score += 1;
+        return { voice, score };
+      })
+      .sort((a, b) => b.score - a.score);
+    return scored.length > 0 ? scored[0].voice : null;
   }
 
   function syncVoiceChoices() {
@@ -1151,7 +1307,9 @@ function init() {
     speechRateLabel.textContent = `${speechRate.toFixed(1)}×`;
   }
 
-  function speakText(text: string, force = false) {
+  type SpeakMood = "chat" | "sharp" | "verdict" | "offer";
+
+  function speakText(text: string, force = false, mood: SpeakMood = "chat") {
     if ((!voiceOutputEnabled && !force) || !("speechSynthesis" in window)) return;
     const cleanText = text.replace(/[*_#`]/g, "").slice(0, 1200);
     if (!cleanText) return;
@@ -1160,8 +1318,16 @@ function init() {
     const utterance = new SpeechSynthesisUtterance(cleanText);
     const voice = chooseHumanVoice();
     if (voice) utterance.voice = voice;
-    utterance.rate = speechRate;
-    utterance.pitch = 1;
+    // Prosody is the difference between robotic and alive: tactics snap a
+    // little faster and higher, verdicts slow down, offers stay warm.
+    const moodTune: Record<SpeakMood, { rate: number; pitch: number }> = {
+      chat: { rate: 1.0, pitch: 1.0 },
+      sharp: { rate: 1.08, pitch: 1.15 },
+      verdict: { rate: 0.94, pitch: 0.95 },
+      offer: { rate: 1.0, pitch: 1.08 },
+    };
+    utterance.rate = speechRate * moodTune[mood].rate;
+    utterance.pitch = moodTune[mood].pitch;
     utterance.volume = 1;
     utterance.onend = syncSpeechControls;
     utterance.onerror = syncSpeechControls;
@@ -1693,24 +1859,128 @@ function init() {
   explorerPanel.hidden = true;
   rightPanel.appendChild(explorerPanel);
 
-  let explorer: { line: TeachableLine; cursor: number } | null = null;
+  let explorer: {
+    line: TeachableLine;
+    views: Array<{ label: string; hook: string; line: TeachableLine }>;
+    activeView: number;
+    cursor: number;
+    playing: boolean;
+    timer: number | null;
+    speed: number;
+  } | null = null;
+
+  function stopPlayback() {
+    if (!explorer) return;
+    explorer.playing = false;
+    if (explorer.timer !== null) {
+      window.clearTimeout(explorer.timer);
+      explorer.timer = null;
+    }
+  }
 
   function exitExplorer() {
     if (!explorer) return;
+    stopPlayback();
+    hideHand();
     explorer = null;
     explorerPanel.hidden = true;
     explorerPanel.innerHTML = "";
     ideaBtn.disabled = false;
     ideaBtn.textContent = "\u{1F4A1} Show me the idea";
+    setCoachStatus("watching…");
     gc.jumpToPly(gc.getMaxPly());
+  }
+
+  // --- Ghost hand: the coach's touch taking over the board ---
+  let handEl: HTMLDivElement | null = null;
+  function squareCenter(sq: string): { x: number; y: number } | null {
+    const boardEl = document.querySelector("cg-board") as HTMLElement | null;
+    if (!boardEl) return null;
+    const rect = boardEl.getBoundingClientRect();
+    if (rect.width <= 0) return null;
+    const size = rect.width / 8;
+    let file = sq.charCodeAt(0) - 97;
+    let rank = 8 - parseInt(sq[1], 10);
+    let orientation = "white";
+    try {
+      orientation = (board as unknown as { state?: { orientation?: string } })
+        .state?.orientation || "white";
+    } catch {
+      orientation = "white";
+    }
+    if (orientation === "black") {
+      file = 7 - file;
+      rank = 7 - rank;
+    }
+    return { x: rect.left + (file + 0.5) * size, y: rect.top + (rank + 0.5) * size };
+  }
+
+  function hideHand() {
+    if (handEl) handEl.style.opacity = "0";
+  }
+
+  function glideHand(fromSq: string, toSq: string, ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const a = squareCenter(fromSq);
+      const b = squareCenter(toSq);
+      if (!a || !b) {
+        resolve();
+        return;
+      }
+      if (!handEl) {
+        handEl = document.createElement("div");
+        handEl.className = "ghost-hand";
+        handEl.innerHTML =
+          `<svg viewBox="0 0 32 32" width="36" height="36" aria-hidden="true">` +
+          `<g fill="rgba(20,24,40,0.92)" stroke="#4ade80" stroke-width="1.6">` +
+          `<rect x="13" y="2.5" width="4.6" height="12" rx="2.3"/>` +
+          `<rect x="18.2" y="7" width="4" height="9" rx="2"/>` +
+          `<rect x="8.6" y="8.5" width="4" height="8.5" rx="2"/>` +
+          `<rect x="9" y="13" width="13" height="13" rx="6"/>` +
+          `<path d="M9 17 L3.5 13.5 L5.5 10.5 L10 13.5 Z"/>` +
+          `</g></svg>`;
+        document.body.appendChild(handEl);
+      }
+      handEl.style.opacity = "1";
+      handEl.style.transition = "none";
+      handEl.style.transform = `translate(${a.x - 18}px, ${a.y - 22}px)`;
+      void handEl.offsetWidth;
+      handEl.style.transition = `transform ${ms}ms cubic-bezier(.3,.7,.3,1), opacity 250ms`;
+      handEl.style.transform = `translate(${b.x - 18}px, ${b.y - 22}px)`;
+      window.setTimeout(() => {
+        if (handEl) handEl.style.opacity = "0";
+        resolve();
+      }, ms);
+    });
   }
 
   function renderExplorer() {
     if (!explorer) return;
     const { line, cursor } = explorer;
     explorerPanel.innerHTML = "";
+    const active = explorer.views[explorer.activeView];
+    if (explorer.views.length > 1) {
+      const tabs = document.createElement("div");
+      explorer.views.forEach((view, index) => {
+        const tab = document.createElement("button");
+        tab.className = "quick-login-btn";
+        tab.type = "button";
+        tab.textContent = view.label;
+        tab.style.fontWeight = explorer!.activeView === index ? "800" : "400";
+        tab.style.opacity = explorer!.activeView === index ? "1" : "0.65";
+        tab.addEventListener("click", () => {
+          if (!explorer) return;
+          stopPlayback();
+          explorer.activeView = index;
+          explorer.line = explorer.views[index].line;
+          goExplorerPly(0, false);
+        });
+        tabs.appendChild(tab);
+      });
+      explorerPanel.appendChild(tabs);
+    }
     const verdict = document.createElement("div");
-    verdict.textContent = line.verdict;
+    verdict.textContent = active && active.hook ? active.hook : line.verdict;
     explorerPanel.appendChild(verdict);
     const movesRow = document.createElement("div");
     line.moves.forEach((ply, index) => {
@@ -1802,17 +2072,30 @@ function init() {
       let line: TeachableLine;
       if (GITHUB_PAGES_DEMO) {
         const info = await Promise.race([
-          engine.evaluateMultiPVAsync(fen, 3, 14),
+          engine.evaluateMultiPVAsync(fen, 5, 14),
           new Promise<null>((resolve) => setTimeout(() => resolve(null), 25000)),
         ]);
         if (!info || info.length === 0) throw new Error("Browser engine returned no lines");
-        const best = [...info].sort((a, b) => a.multipv - b.multipv)[0];
-        line = buildLocalTeachableLine(fen, best.pv, best.scoreCp, best.scoreMate, 14, 10);
+        const sorted = [...info].sort((a, b) => a.multipv - b.multipv);
+        line = buildLocalTeachableLine(
+          fen,
+          sorted.map((entry) => ({ pv: entry.pv, scoreCp: entry.scoreCp, scoreMate: entry.scoreMate })),
+          14,
+          10,
+        );
       } else {
         line = await fetchTeachableLine(fen, 10);
       }
       if (line.moves.length === 0) throw new Error("Engine returned an empty line");
-      explorer = { line, cursor: 0 };
+      const views = [{ label: "Best", hook: "", line }];
+      for (const trap of line.traps || []) {
+        views.push({
+          label: `Trap: ${trap.move_san}`,
+          hook: `Most humans play ${trap.move_san} here — ${trap.tempting_because}. And that's the trap (−${trap.win_drop}%):`,
+          line: trap.line,
+        });
+      }
+      explorer = { line, views, activeView: 0, cursor: 0, playing: false, timer: null, speed: 1 };
       explorerPanel.hidden = false;
       board.set({ movable: { color: undefined } });
       renderExplorer();
@@ -2178,16 +2461,41 @@ function init() {
       // Keep the default; facts stay best-effort.
     }
     let facts: string | null = null;
+    let trapText: string | null = null;
     try {
-      const info = await Promise.race([
-        engine.evaluateAsync(fen, 14),
+      const multi = await Promise.race([
+        engine.evaluateMultiPVAsync(fen, 3, 14),
         new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
       ]);
-      if (info) facts = stockfishFactsText(fen, info);
+      if (multi && multi.length > 0) {
+        const sorted = [...multi].sort((a, b) => a.multipv - b.multipv);
+        const best = sorted[0];
+        facts = stockfishFactsText(fen, {
+          depth: 14,
+          scoreCp: best.scoreCp,
+          scoreMate: best.scoreMate,
+          pv: best.pv,
+        });
+        try {
+          const pack = buildLocalTeachableLine(
+            fen,
+            sorted.map((entry) => ({ pv: entry.pv, scoreCp: entry.scoreCp, scoreMate: entry.scoreMate })),
+            14,
+            10,
+          );
+          const bits = (pack.traps || []).slice(0, 2).map((trap) =>
+            `${trap.move_san} tempts because ${trap.tempting_because}; refutation ${trap.line.moves.slice(0, 4).map((ply) => ply.san).join(" ")}`
+          );
+          if (bits.length > 0) trapText = bits.join(" | ");
+        } catch {
+          trapText = null;
+        }
+      }
     } catch {
       facts = null;
+      trapText = null;
     }
-    const prompt = composeCodexChessPrompt({ question: message, fen, moves, engineFacts: facts });
+    const prompt = composeCodexChessPrompt({ question: message, fen, moves, engineFacts: facts, traps: trapText });
     const response = await startProviderLogin(
       "codex",
       codexEventHandler(thinkingBubble, {
@@ -2402,6 +2710,13 @@ function init() {
   });
   gc.setStatusCallback(showStatus);
   gc.setCoachingCallback((coaching) => {
+    // The coach notices interesting moments in every mode (offers are just
+    // a quiet bubble, never a popup).
+    try {
+      maybeOfferIdea(coaching);
+    } catch {
+      // Offers are decorative; coaching must never break.
+    }
     // Codex mode on Pages is single-voice: board arrows/highlights still
     // draw (game.ts), but the template text bubble stays off so it never
     // talks over the Codex reply.
@@ -2591,6 +2906,7 @@ function init() {
   personaSelect.addEventListener("change", () => {
     gc.setCoachName(personaSelect.value);
     localStorage.setItem("chess-teacher-coach", personaSelect.value);
+    coachNameEl.textContent = coachDisplayName();
     resetUI();
   });
 

@@ -33,7 +33,7 @@ from server.import_puzzles import (
     import_puzzles,
 )
 from server.knowledge import seed_knowledge_base
-from server.lines import build_teachable_line
+from server.lines import build_teachable_line, find_traps
 from server.llm import ChessTeacher
 from server.opponent import AIUnavailableError
 from server.puzzles import PuzzleDB
@@ -399,6 +399,8 @@ async def best_moves(req: BestMovesRequest):
 async def analysis_line(req: LineRequest):
     """Teachable engine line: up to ten half-moves with per-ply comments.
 
+    Returns the best line plus tempting-but-flawed trap lines (with
+    refutations riding in their own PV tails) from a single MultiPV result.
     Coded facts only (no language model), so it is fast and works offline.
     The frontend explorer steps through ``moves`` with arrows and speech.
     """
@@ -409,7 +411,7 @@ async def analysis_line(req: LineRequest):
     if board.is_game_over():
         raise HTTPException(status_code=400, detail="Game is already over")
     try:
-        lines = await engine.analyze_lines(req.fen, n=3, depth=req.depth)
+        lines = await engine.analyze_lines(req.fen, n=5, depth=req.depth)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except RuntimeError as e:
@@ -417,10 +419,27 @@ async def analysis_line(req: LineRequest):
     if not lines:
         raise HTTPException(status_code=503, detail="Engine returned no lines")
     best = lines[0]
-    return build_teachable_line(
+    result = build_teachable_line(
         req.fen, best.pv, best.score_cp, best.score_mate, best.depth,
         max_plies=req.max_plies,
     )
+    trap_lines: list[dict] = []
+    try:
+        for trap in find_traps(req.fen, lines):
+            trap_lines.append({
+                "move_san": trap["move_san"],
+                "tempting_because": trap["tempting_because"],
+                "win_drop": trap["win_drop"],
+                "line": build_teachable_line(
+                    req.fen, trap["move_ucis"],
+                    trap["score_cp"], trap["score_mate"], best.depth,
+                    max_plies=req.max_plies,
+                ),
+            })
+    except (ValueError, AssertionError, IndexError):
+        trap_lines = []
+    result["traps"] = trap_lines
+    return result
 
 
 @app.post("/api/game/new")

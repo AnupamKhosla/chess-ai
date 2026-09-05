@@ -750,6 +750,7 @@ export function composeCodexChessPrompt(input: {
   fen: string;
   moves: string;
   engineFacts?: string | null;
+  traps?: string | null;
 }): string {
   const parts = [
     `Student question: ${input.question.trim().slice(0, 500) || "(coach this position)"}`,
@@ -758,6 +759,14 @@ export function composeCodexChessPrompt(input: {
   ];
   if (input.engineFacts?.trim()) {
     parts.push(`Browser Stockfish facts (authoritative): ${input.engineFacts.trim().slice(0, 600)}`);
+  }
+  if (input.traps?.trim()) {
+    parts.push(
+      `Human traps in this position (tempting moves that lose — teach these like a human coach): ${input.traps.trim().slice(0, 600)}`,
+    );
+    parts.push(
+      "When relevant, lead with the human story: what most players reach for here, why it tempts them, and the refutation. Never contradict the Stockfish facts.",
+    );
   }
   return parts.join("\n");
 }
@@ -774,6 +783,13 @@ export interface LinePly {
   castle: boolean;
 }
 
+export interface TrapLine {
+  move_san: string;
+  tempting_because: string;
+  win_drop: number;
+  line: TeachableLine;
+}
+
 export interface TeachableLine {
   fen: string;
   depth: number;
@@ -781,6 +797,7 @@ export interface TeachableLine {
   score_mate: number | null;
   verdict: string;
   moves: LinePly[];
+  traps?: TrapLine[];
 }
 
 const PIECE_NAMES: Record<string, string> = {
@@ -810,7 +827,7 @@ export async function fetchTeachableLine(fen: string, maxPlies = 10): Promise<Te
  * Build a teachable line in the browser from a Stockfish PV (static demo
  * path). Mirrors server lines.py comment rules.
  */
-export function buildLocalTeachableLine(
+export function buildLineFromPv(
   fen: string,
   pvUci: string[],
   scoreCp: number | null,
@@ -905,6 +922,101 @@ function describeScore(scoreCp: number | null, scoreMate: number | null): string
   const pawns = Math.abs(scoreCp) / 100;
   if (pawns < 0.3) return "The engine calls it level.";
   return `The engine rates this ${pawns.toFixed(1)} pawns for ${scoreCp > 0 ? "White" : "Black"}.`;
+}
+
+function winPercent(cp: number): number {
+  return 50 + 50 * (2 / (1 + Math.exp(-0.00368208 * cp)) - 1);
+}
+
+const CENTER_SQUARES = new Set(
+  ["c", "d", "e", "f"].flatMap((f) => ["3", "4", "5", "6"].map((r) => f + r)),
+);
+
+function moveNaturalness(
+  fen: string,
+  uci: string,
+): { score: number; reason: string } {
+  try {
+    const board = new Chess(fen);
+    const from = uci.slice(0, 2);
+    const to = uci.slice(2, 4);
+    const legal = board.moves({ verbose: true }) as Array<{
+      from: string; to: string; flags: string; piece: string; promotion?: string;
+    }>;
+    const mv = legal.find((m) =>
+      m.from === from && m.to === to && (!uci[4] || m.promotion === uci[4]),
+    );
+    if (!mv) return { score: 0, reason: "" };
+    let score = 0;
+    let reason = "it develops toward the center";
+    if (mv.flags.includes("c") || mv.flags.includes("e")) {
+      score += 3;
+      reason = "it grabs material";
+    }
+    const probe = new Chess(fen);
+    probe.move({ from, to, promotion: mv.promotion as "q" | "r" | "b" | "n" | undefined });
+    if (probe.isCheck()) {
+      score += 3;
+      reason = "it gives check";
+    }
+    if (mv.flags.includes("k") || mv.flags.includes("q")) {
+      score += 2;
+      reason = "it tucks the king away";
+    }
+    if (mv.flags.includes("p")) {
+      score += 3;
+      reason = "it promotes";
+    }
+    if (["n", "b", "p", "q"].includes(mv.piece) && CENTER_SQUARES.has(to)) score += 2;
+    return { score, reason };
+  } catch {
+    return { score: 0, reason: "" };
+  }
+}
+
+/**
+ * Browser mirror of server find_traps: tempting-but-flawed lines from one
+ * MultiPV result, refutation riding in each line's own PV tail.
+ */
+export function buildLocalTeachableLine(
+  fen: string,
+  multipv: Array<{ pv: string[]; scoreCp: number | null; scoreMate?: number | null }>,
+  depth: number,
+  maxPlies = 10,
+): TeachableLine {
+  const sorted = [...multipv].filter((ln) => ln.pv.length > 0);
+  const first = sorted[0];
+  const best = buildLineFromPv(
+    fen, first?.pv || [], first?.scoreCp ?? null, first?.scoreMate ?? null, depth, maxPlies,
+  );
+  const bestWin = winPercent(first?.scoreCp ?? 0);
+  const traps: TrapLine[] = [];
+  for (const line of sorted.slice(1)) {
+    const uci = line.pv[0];
+    const nature = moveNaturalness(fen, uci);
+    if (nature.score < 2) continue;
+    const drop = bestWin - winPercent(line.scoreCp ?? 0);
+    if (drop < 10) continue;
+    let san = uci;
+    try {
+      san = new Chess(fen).move({
+        from: uci.slice(0, 2),
+        to: uci.slice(2, 4),
+        promotion: uci[4] as "q" | "r" | "b" | "n" | undefined,
+      }).san;
+    } catch {
+      continue;
+    }
+    traps.push({
+      move_san: san,
+      tempting_because: nature.reason,
+      win_drop: Math.round(drop * 10) / 10,
+      line: buildLineFromPv(fen, line.pv.slice(0, 6), line.scoreCp, line.scoreMate ?? null, depth, maxPlies),
+    });
+  }
+  traps.sort((a, b) => b.win_drop - a.win_drop);
+  best.traps = traps.slice(0, 2);
+  return best;
 }
 
 /**
