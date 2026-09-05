@@ -2122,8 +2122,13 @@ function init() {
     explorerPanel.appendChild(comment);
   }
 
-  async function goExplorerPly(next: number, speak: boolean, glide = true) {
+  async function goExplorerPly(next: number, speak: boolean, glide = true, fromPlayback = false) {
     if (!explorer) return;
+    if (explorer.playing && !fromPlayback) {
+      // Manual navigation always wins over autoplay.
+      stopPlayback();
+      setCoachStatus("watching…");
+    }
     const clamped = Math.max(0, Math.min(next, explorer.line.moves.length));
     explorer.cursor = clamped;
     if (clamped === 0) {
@@ -2173,7 +2178,7 @@ function init() {
         renderExplorer();
         return;
       }
-      void goExplorerPly(explorer.cursor + 1, true).then(() => schedulePlaybackStep());
+      void goExplorerPly(explorer.cursor + 1, true, true, true).then(() => schedulePlaybackStep());
     }, Math.round(3400 / explorer.speed));
   }
 

@@ -948,22 +948,29 @@ function moveNaturalness(
     );
     if (!mv) return { score: 0, reason: "" };
     let score = 0;
+    // Priority matches server lines.py: capture > check > castle > promo.
     let reason = "it develops toward the center";
-    if (mv.flags.includes("c") || mv.flags.includes("e")) {
+    const isCapture = mv.flags.includes("c") || mv.flags.includes("e");
+    const isCastle = mv.flags.includes("k") || mv.flags.includes("q");
+    const isPromo = mv.flags.includes("p");
+    let givesCheck = false;
+    try {
+      const probe = new Chess(fen);
+      probe.move({ from, to, promotion: mv.promotion as "q" | "r" | "b" | "n" | undefined });
+      givesCheck = probe.isCheck();
+    } catch {
+      return { score: 0, reason: "" };
+    }
+    if (isCapture) {
       score += 3;
       reason = "it grabs material";
-    }
-    const probe = new Chess(fen);
-    probe.move({ from, to, promotion: mv.promotion as "q" | "r" | "b" | "n" | undefined });
-    if (probe.isCheck()) {
+    } else if (givesCheck) {
       score += 3;
       reason = "it gives check";
-    }
-    if (mv.flags.includes("k") || mv.flags.includes("q")) {
+    } else if (isCastle) {
       score += 2;
       reason = "it tucks the king away";
-    }
-    if (mv.flags.includes("p")) {
+    } else if (isPromo) {
       score += 3;
       reason = "it promotes";
     }
