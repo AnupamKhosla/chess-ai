@@ -1,0 +1,15 @@
+{
+  "expo": {
+    "name": "Chess Teacher",
+    "slug": "chess-teacher-app",
+    "version": "0.1.0",
+    "orientation": "default",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "softwareKeyboardLayoutMode": "pan"
+    }
+  }
+}

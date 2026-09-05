@@ -6,14 +6,18 @@ import {
   CoachingData,
   CodexSandboxEvent,
   GITHUB_PAGES_DEMO,
+  TeachableLine,
+  buildLocalTeachableLine,
   composeCodexChessPrompt,
   configureProvider,
+  fetchTeachableLine,
   getProviders,
   rememberCodexExchange,
   sendChat,
   startProviderLogin,
 } from "./api";
 import { Chess } from "chess.js";
+import type { Key } from "chessground/types";
 import { RemoteUCI } from "./remote";
 
 /** Generate a chessground-compatible board SVG with the given square colors. */
@@ -867,6 +871,44 @@ function init() {
   layout.className = "layout";
   layoutWrap.appendChild(layout);
 
+  // --- Footer: source, trust, privacy (bottom nav) ---
+  const footer = document.createElement("footer");
+  footer.className = "app-footer";
+  const footerNav = document.createElement("nav");
+  footerNav.setAttribute("aria-label", "About and privacy");
+  const repoLink = document.createElement("a");
+  repoLink.href = "https://github.com/AnupamKhosla/chess-ai";
+  repoLink.target = "_blank";
+  repoLink.rel = "noreferrer noopener";
+  repoLink.textContent = "Open source";
+  const sandboxLink = document.createElement("a");
+  sandboxLink.href = "https://github.com/AnupamKhosla/chess-ai-codex-sandbox";
+  sandboxLink.target = "_blank";
+  sandboxLink.rel = "noreferrer noopener";
+  sandboxLink.textContent = "Login backend source";
+  sandboxLink.title = "Public code behind the ChatGPT login test — verify we never see your password";
+  const privacyBtn = document.createElement("button");
+  privacyBtn.className = "quick-login-btn";
+  privacyBtn.type = "button";
+  privacyBtn.textContent = "Privacy";
+  const privacyPanel = document.createElement("div");
+  privacyPanel.className = "line-display";
+  privacyPanel.hidden = true;
+  privacyPanel.textContent =
+    "Privacy: no accounts, no analytics, no tracking. Your game and chat live only in this browser " +
+    "(localStorage) and, in the local app, in a database file on your own machine. API keys you enter " +
+    "stay in server memory for that run and are never written anywhere. ChatGPT login happens only on " +
+    "the official OpenAI page; our pages never see your password, and the one-shot login backend deletes " +
+    "its temporary session after each reply. The free browser chat sends your question plus the board " +
+    "position (FEN) to its hosted model endpoint. Not affiliated with OpenAI or Anthropic.";
+  privacyBtn.addEventListener("click", () => {
+    privacyPanel.hidden = !privacyPanel.hidden;
+  });
+  footerNav.append(repoLink, document.createTextNode(" · "), sandboxLink, document.createTextNode(" · "), privacyBtn);
+  footer.appendChild(footerNav);
+  footer.appendChild(privacyPanel);
+  root.appendChild(footer);
+
   let rightPanelCollapsed = localStorage.getItem("chess-teacher-right-panel") === "collapsed";
   function setRightPanelCollapsed(collapsed: boolean) {
     rightPanelCollapsed = collapsed;
@@ -1635,6 +1677,160 @@ function init() {
   lineDisplay.textContent = "Lines: \u2014";
   rightPanel.appendChild(lineDisplay);
 
+  // --- Line explorer ("Show me the idea") ---
+  // Steps through a ~10 half-move engine line on the board with arrows and
+  // a spoken factual comment per move. Board preview only: the real game is
+  // untouched until you press Live (or make a move after exiting).
+  const ideaBtn = document.createElement("button");
+  ideaBtn.className = "quick-login-btn";
+  ideaBtn.type = "button";
+  ideaBtn.textContent = "\u{1F4A1} Show me the idea";
+  ideaBtn.title = "Preview the engine's idea line step by step with arrows and commentary";
+  rightPanel.appendChild(ideaBtn);
+
+  const explorerPanel = document.createElement("div");
+  explorerPanel.className = "line-display";
+  explorerPanel.hidden = true;
+  rightPanel.appendChild(explorerPanel);
+
+  let explorer: { line: TeachableLine; cursor: number } | null = null;
+
+  function exitExplorer() {
+    if (!explorer) return;
+    explorer = null;
+    explorerPanel.hidden = true;
+    explorerPanel.innerHTML = "";
+    ideaBtn.disabled = false;
+    ideaBtn.textContent = "\u{1F4A1} Show me the idea";
+    gc.jumpToPly(gc.getMaxPly());
+  }
+
+  function renderExplorer() {
+    if (!explorer) return;
+    const { line, cursor } = explorer;
+    explorerPanel.innerHTML = "";
+    const verdict = document.createElement("div");
+    verdict.textContent = line.verdict;
+    explorerPanel.appendChild(verdict);
+    const movesRow = document.createElement("div");
+    line.moves.forEach((ply, index) => {
+      const chip = document.createElement("button");
+      chip.className = "quick-login-btn";
+      chip.type = "button";
+      chip.style.fontWeight = cursor === index + 1 ? "800" : "400";
+      chip.style.opacity = cursor === index + 1 ? "1" : "0.75";
+      const moveNo = Math.floor(index / 2) + 1;
+      chip.textContent = (index % 2 === 0 ? `${moveNo}. ` : "") + ply.san;
+      chip.title = ply.comment;
+      chip.addEventListener("click", () => goExplorerPly(index + 1, true));
+      movesRow.appendChild(chip);
+    });
+    explorerPanel.appendChild(movesRow);
+    const controls = document.createElement("div");
+    const prevBtn = document.createElement("button");
+    prevBtn.className = "quick-login-btn";
+    prevBtn.type = "button";
+    prevBtn.textContent = "\u25C0 Prev";
+    prevBtn.addEventListener("click", () => goExplorerPly(cursor - 1, true));
+    const nextBtn = document.createElement("button");
+    nextBtn.className = "quick-login-btn";
+    nextBtn.type = "button";
+    nextBtn.textContent = "Next \u25B6";
+    nextBtn.addEventListener("click", () => goExplorerPly(cursor + 1, true));
+    const speakBtn = document.createElement("button");
+    speakBtn.className = "quick-login-btn";
+    speakBtn.type = "button";
+    speakBtn.textContent = "\u{1F50A} Line";
+    speakBtn.title = "Speak the whole line";
+    speakBtn.addEventListener("click", () => {
+      if (!explorer) return;
+      const text = explorer.line.moves
+        .map((ply, i) => `${Math.floor(i / 2) + 1}${i % 2 === 0 ? "." : "…"} ${ply.san}. ${ply.comment}`)
+        .join(" ");
+      speakText(text, true);
+    });
+    const liveBtn = document.createElement("button");
+    liveBtn.className = "quick-login-btn";
+    liveBtn.type = "button";
+    liveBtn.textContent = "Live";
+    liveBtn.title = "Back to the live game";
+    liveBtn.addEventListener("click", exitExplorer);
+    controls.append(prevBtn, nextBtn, speakBtn, liveBtn);
+    explorerPanel.appendChild(controls);
+    const comment = document.createElement("div");
+    comment.textContent = cursor === 0
+      ? "Start of the idea — press Next (or →) to walk it."
+      : line.moves[cursor - 1].comment;
+    explorerPanel.appendChild(comment);
+  }
+
+  function goExplorerPly(next: number, speak: boolean) {
+    if (!explorer) return;
+    const clamped = Math.max(0, Math.min(next, explorer.line.moves.length));
+    explorer.cursor = clamped;
+    if (clamped === 0) {
+      board.set({ fen: explorer.line.fen });
+      board.setAutoShapes([]);
+    } else {
+      const ply = explorer.line.moves[clamped - 1];
+      const turn = ply.fen_after.split(" ")[1] === "b" ? "black" : "white";
+      board.set({
+        fen: ply.fen_after,
+        turnColor: turn as "white" | "black",
+        movable: { color: undefined },
+        lastMove: [ply.uci.slice(0, 2) as Key, ply.uci.slice(2, 4) as Key],
+      });
+      board.setAutoShapes([{
+        orig: ply.uci.slice(0, 2) as Key,
+        dest: ply.uci.slice(2, 4) as Key,
+        brush: "green",
+      }]);
+      if (speak) speakText(`${ply.san}. ${ply.comment}`);
+    }
+    renderExplorer();
+  }
+
+  async function openExplorer() {
+    if (explorer) {
+      exitExplorer();
+      return;
+    }
+    ideaBtn.disabled = true;
+    ideaBtn.textContent = "Reading the idea…";
+    try {
+      const fen = gc.viewedFen();
+      let line: TeachableLine;
+      if (GITHUB_PAGES_DEMO) {
+        const info = await Promise.race([
+          engine.evaluateMultiPVAsync(fen, 3, 14),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 25000)),
+        ]);
+        if (!info || info.length === 0) throw new Error("Browser engine returned no lines");
+        const best = [...info].sort((a, b) => a.multipv - b.multipv)[0];
+        line = buildLocalTeachableLine(fen, best.pv, best.scoreCp, best.scoreMate, 14, 10);
+      } else {
+        line = await fetchTeachableLine(fen, 10);
+      }
+      if (line.moves.length === 0) throw new Error("Engine returned an empty line");
+      explorer = { line, cursor: 0 };
+      explorerPanel.hidden = false;
+      board.set({ movable: { color: undefined } });
+      renderExplorer();
+      ideaBtn.textContent = "Close idea";
+    } catch (error) {
+      explorerPanel.hidden = false;
+      explorerPanel.textContent = error instanceof Error ? error.message : "Idea unavailable";
+      setTimeout(() => {
+        if (!explorer) explorerPanel.hidden = true;
+      }, 4000);
+      ideaBtn.textContent = "\u{1F4A1} Show me the idea";
+    } finally {
+      ideaBtn.disabled = false;
+    }
+  }
+
+  ideaBtn.addEventListener("click", () => void openExplorer());
+
   // Moves section label
   const movesLabel = document.createElement("div");
   movesLabel.className = "section-label";
@@ -2163,6 +2359,7 @@ function init() {
 
   // --- New game reset ---
   function resetUI() {
+    exitExplorer();
     gc.newGame().then(() => {
       const sessionId = gc.getSessionId();
       if (sessionId) localStorage.setItem("chess-teacher-session-id", sessionId);
@@ -2326,11 +2523,19 @@ function init() {
     switch (e.key) {
       case "ArrowLeft":
         e.preventDefault();
-        gc.stepBack();
+        if (explorer) goExplorerPly(explorer.cursor - 1, true);
+        else gc.stepBack();
         break;
       case "ArrowRight":
         e.preventDefault();
-        gc.stepForward();
+        if (explorer) goExplorerPly(explorer.cursor + 1, true);
+        else gc.stepForward();
+        break;
+      case "Escape":
+        if (explorer) {
+          e.preventDefault();
+          exitExplorer();
+        }
         break;
       case "ArrowUp":
       case "Home":

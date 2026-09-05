@@ -1,4 +1,5 @@
 import { Chess } from "chess.js";
+import type { Square } from "chess.js";
 
 export interface NewGameResponse {
   session_id: string;
@@ -759,6 +760,151 @@ export function composeCodexChessPrompt(input: {
     parts.push(`Browser Stockfish facts (authoritative): ${input.engineFacts.trim().slice(0, 600)}`);
   }
   return parts.join("\n");
+}
+
+export interface LinePly {
+  ply: number;
+  san: string;
+  uci: string;
+  fen_after: string;
+  comment: string;
+  capture: boolean;
+  check: boolean;
+  checkmate: boolean;
+  castle: boolean;
+}
+
+export interface TeachableLine {
+  fen: string;
+  depth: number;
+  score_cp: number | null;
+  score_mate: number | null;
+  verdict: string;
+  moves: LinePly[];
+}
+
+const PIECE_NAMES: Record<string, string> = {
+  p: "Pawn",
+  n: "Knight",
+  b: "Bishop",
+  r: "Rook",
+  q: "Queen",
+  k: "King",
+};
+
+/** Fetch a teachable line from the local server (unavailable in static demo). */
+export async function fetchTeachableLine(fen: string, maxPlies = 10): Promise<TeachableLine> {
+  const res = await fetch(`${API_BASE}/analysis/line`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fen, max_plies: maxPlies, depth: 16 }),
+  });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({ detail: "Line analysis failed" }));
+    throw new Error(detail.detail || `Line analysis failed: ${res.status}`);
+  }
+  return res.json();
+}
+
+/**
+ * Build a teachable line in the browser from a Stockfish PV (static demo
+ * path). Mirrors server lines.py comment rules.
+ */
+export function buildLocalTeachableLine(
+  fen: string,
+  pvUci: string[],
+  scoreCp: number | null,
+  scoreMate: number | null,
+  depth: number,
+  maxPlies = 10,
+): TeachableLine {
+  const limit = Math.max(1, Math.min(maxPlies, 10));
+  const verdict = describeScore(scoreCp, scoreMate);
+  const board = new Chess(fen);
+  const moves: LinePly[] = [];
+  for (const uci of pvUci.slice(0, limit)) {
+    const from = uci.slice(0, 2);
+    const to = uci.slice(2, 4);
+    const promo = uci[4] as "q" | "r" | "b" | "n" | undefined;
+    try {
+      board.move({ from, to, promotion: promo });
+    } catch {
+      break;
+    }
+    moves.push({
+      ply: moves.length + 1,
+      san: "",
+      uci,
+      fen_after: board.fen(),
+      comment: "",
+      capture: false,
+      check: false,
+      checkmate: false,
+      castle: false,
+    });
+  }
+  // Second pass with pre-move boards for honest flags and comments.
+  const walk = new Chess(fen);
+  moves.forEach((ply, index) => {
+    const from = ply.uci.slice(0, 2);
+    const to = ply.uci.slice(2, 4);
+    const promo = ply.uci[4] as "q" | "r" | "b" | "n" | undefined;
+    // Flags must be read from the pre-move position.
+    const mover = walk.get(from as Square);
+    const pieceName = PIECE_NAMES[String(mover?.type || "")] || "Piece";
+    ply.capture = isCaptureMove(walk, from, to);
+    ply.castle = isCastleMove(walk, from, to);
+    try {
+      ply.san = walk.move({ from, to, promotion: promo }).san;
+    } catch {
+      ply.san = ply.san || to;
+    }
+    const parts = ply.castle
+      ? [`${pieceName} castles ${to[0] === "g" ? "kingside" : "queenside"} for safety.`]
+      : promo
+        ? [`${pieceName} promotes to ${PIECE_NAMES[promo] || "queen"} on ${to}.`]
+        : [`${pieceName} to ${to}.`];
+    if (ply.capture) parts.push(`Takes on ${to}.`);
+    const after = new Chess(ply.fen_after);
+    ply.check = after.isCheck();
+    ply.checkmate = after.isCheckmate();
+    if (ply.checkmate) parts.push("Checkmate.");
+    else if (ply.check) parts.push("Check — the king must move, block, or capture.");
+    if (index === moves.length - 1) parts.push(verdict);
+    ply.comment = parts.join(" ");
+  });
+  return { fen, depth, score_cp: scoreCp, score_mate: scoreMate, verdict, moves };
+}
+
+function isCaptureMove(board: Chess, from: string, to: string): boolean {
+  try {
+    const target = board.get(to as Square);
+    if (target?.type) return true;
+    const mover = board.get(from as Square);
+    // En passant: pawn moves diagonally to an empty square.
+    return mover?.type === "p" && from[0] !== to[0];
+  } catch {
+    return false;
+  }
+}
+
+function isCastleMove(board: Chess, from: string, to: string): boolean {
+  try {
+    const mover = board.get(from as Square);
+    return mover?.type === "k" && Math.abs(to.charCodeAt(0) - from.charCodeAt(0)) === 2;
+  } catch {
+    return false;
+  }
+}
+
+function describeScore(scoreCp: number | null, scoreMate: number | null): string {
+  if (scoreMate) {
+    return scoreMate > 0 ? `White mates in ${scoreMate}.` : `Black mates in ${Math.abs(scoreMate)}.`;
+  }
+  if (scoreCp === null || scoreCp === undefined) return "The engine calls it unclear.";
+  const pawns = Math.abs(scoreCp) / 100;
+  if (pawns < 0.3) return "The engine calls it level.";
+  return `The engine rates this ${pawns.toFixed(1)} pawns for ${scoreCp > 0 ? "White" : "Black"}.`;
 }
 
 /**

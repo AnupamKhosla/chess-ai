@@ -33,6 +33,7 @@ from server.import_puzzles import (
     import_puzzles,
 )
 from server.knowledge import seed_knowledge_base
+from server.lines import build_teachable_line
 from server.llm import ChessTeacher
 from server.opponent import AIUnavailableError
 from server.puzzles import PuzzleDB
@@ -227,6 +228,12 @@ class BestMovesRequest(BaseModel):
     depth: int = 20
 
 
+class LineRequest(BaseModel):
+    fen: str
+    max_plies: int = Field(default=10, ge=1, le=10)
+    depth: int = Field(default=16, ge=4, le=22)
+
+
 class NewGameRequest(BaseModel):
     depth: int = 10
     elo_profile: str = "intermediate"
@@ -386,6 +393,34 @@ async def best_moves(req: BestMovesRequest):
         {"uci": m.uci, "score_cp": m.score_cp, "score_mate": m.score_mate}
         for m in moves
     ]
+
+
+@app.post("/api/analysis/line")
+async def analysis_line(req: LineRequest):
+    """Teachable engine line: up to ten half-moves with per-ply comments.
+
+    Coded facts only (no language model), so it is fast and works offline.
+    The frontend explorer steps through ``moves`` with arrows and speech.
+    """
+    try:
+        board = chess.Board(req.fen)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid FEN: {e}") from e
+    if board.is_game_over():
+        raise HTTPException(status_code=400, detail="Game is already over")
+    try:
+        lines = await engine.analyze_lines(req.fen, n=3, depth=req.depth)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
+    if not lines:
+        raise HTTPException(status_code=503, detail="Engine returned no lines")
+    best = lines[0]
+    return build_teachable_line(
+        req.fen, best.pv, best.score_cp, best.score_mate, best.depth,
+        max_plies=req.max_plies,
+    )
 
 
 @app.post("/api/game/new")
