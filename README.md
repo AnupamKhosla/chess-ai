@@ -66,7 +66,11 @@ small anonymous free language-model endpoint directly from the browser:
 - **Show me the idea** — step through the engine's best line (or the trap
   tab) with arrows, per-move spoken commentary, autoplay, and a ghost hand
   playing the moves. Instant color grades tint your moves in the move list.
-
+- **Coach orb + memory (local app)** — a living coach presence that notices
+  big moments, offers tours, and takes over the board. It tracks your
+  tactical habits per day and names the pattern on the third repeat
+  ("third fork tonight — pattern, not accident"). Boldness is adjustable
+  (Chill / Balanced / Proactive), and Talk always interrupts it mid-sentence.
 This public route is intentionally limited to short explanations. The local
 FastAPI app remains the full Stockfish-plus-provider architecture described
 below.
