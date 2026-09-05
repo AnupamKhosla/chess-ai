@@ -2398,6 +2398,27 @@ function init() {
   function renderMoveList(moves: string[]) {
     moveHistory.innerHTML = "";
     const activePly = gc.getCurrentPly();
+    // Noctie-style instant grades: tint each played move by its coaching
+    // quality so patterns jump out while scrolling.
+    const gradeColor: Record<string, string> = {
+      brilliant: "#4ade80",
+      good: "transparent",
+      inaccuracy: "#fbbf24",
+      mistake: "#fb923c",
+      blunder: "#f87171",
+    };
+    const paintGrade = (el: HTMLElement, ply: number) => {
+      try {
+        const quality = gc.getCoachingAtPly(ply)?.quality;
+        const color = quality ? gradeColor[quality] : undefined;
+        if (color && color !== "transparent") {
+          el.style.boxShadow = `inset 3px 0 0 ${color}`;
+          el.title = `Coach graded this: ${quality}`;
+        }
+      } catch {
+        // Grades are decorative; the list must always render.
+      }
+    };
     for (let i = 0; i < moves.length; i += 2) {
       const row = document.createElement("div");
       row.className = "move-row";
@@ -2413,6 +2434,7 @@ function init() {
       whiteEl.className = "move";
       if (whitePly === activePly) whiteEl.classList.add("active");
       whiteEl.textContent = moves[i];
+      paintGrade(whiteEl, whitePly);
       whiteEl.addEventListener("click", () => gc.jumpToPly(whitePly));
       row.appendChild(whiteEl);
 
@@ -2423,6 +2445,7 @@ function init() {
         blackEl.className = "move";
         if (blackPly === activePly) blackEl.classList.add("active");
         blackEl.textContent = moves[i + 1];
+        paintGrade(blackEl, blackPly);
         blackEl.addEventListener("click", () => gc.jumpToPly(blackPly));
         row.appendChild(blackEl);
       } else {
@@ -2855,6 +2878,13 @@ function init() {
       maybeOfferIdea(coaching);
     } catch {
       // Offers are decorative; coaching must never break.
+    }
+    // Repaint move grades now that this ply has one (only when watching
+    // live, so we never yank a scrolled-back history view).
+    try {
+      if (gc.isAtLatest()) renderMoveList(gc.history());
+    } catch {
+      // Grades are decorative; coaching must never break.
     }
     // Codex mode on Pages is single-voice: board arrows/highlights still
     // draw (game.ts), but the template text bubble stays off so it never
