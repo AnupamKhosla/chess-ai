@@ -1,17 +1,19 @@
 import { createBoard } from "./board";
-import { BrowserEngine, MultiPVInfo } from "./eval";
+import { BrowserEngine, EvalInfo, MultiPVInfo } from "./eval";
 import { GameController, PromotionPiece } from "./game";
 import {
   ChatMessage,
   CoachingData,
   CodexSandboxEvent,
   GITHUB_PAGES_DEMO,
+  composeCodexChessPrompt,
   configureProvider,
   getProviders,
   rememberCodexExchange,
   sendChat,
   startProviderLogin,
 } from "./api";
+import { Chess } from "chess.js";
 import { RemoteUCI } from "./remote";
 
 /** Generate a chessground-compatible board SVG with the given square colors. */
@@ -959,6 +961,54 @@ function init() {
   responseModeRow.appendChild(chatModeSelect);
   coachColumn.appendChild(responseModeRow);
 
+  // Pages chat voice: Free Weak AI (no login) or the user's own ChatGPT via
+  // Codex (one device-code login per reply, grounded in browser Stockfish).
+  // One voice at a time — this is what stops the two bots talking over
+  // each other.
+  const PAGES_CHAT_MODE_KEY = "chess-teacher-pages-chat-mode";
+  let pagesChatMode: "free" | "codex" =
+    localStorage.getItem(PAGES_CHAT_MODE_KEY) === "codex" ? "codex" : "free";
+  const askRow = document.createElement("div");
+  askRow.className = "chat-persona-row";
+  const askLabel = document.createElement("span");
+  askLabel.className = "chat-persona-label";
+  askLabel.textContent = "Ask";
+  askRow.appendChild(askLabel);
+  const freeBtn = document.createElement("button");
+  freeBtn.className = "quick-login-btn";
+  freeBtn.type = "button";
+  freeBtn.textContent = "Free Weak AI";
+  freeBtn.title = "No login. Small hosted explainer, short answers.";
+  const codexBtn = document.createElement("button");
+  codexBtn.className = "quick-login-btn";
+  codexBtn.type = "button";
+  codexBtn.textContent = "Codex";
+  codexBtn.title = "Your ChatGPT via Codex, grounded in browser Stockfish. One login per reply.";
+  function syncAskRow() {
+    for (const [btn, active] of [[freeBtn, pagesChatMode === "free"], [codexBtn, pagesChatMode === "codex"]] as const) {
+      btn.style.fontWeight = active ? "800" : "400";
+      btn.style.opacity = active ? "1" : "0.65";
+      btn.setAttribute("aria-pressed", String(active));
+    }
+    chatHint.textContent = pagesChatMode === "codex"
+      ? "Chat answers by Codex (login each reply) · grounded in browser Stockfish"
+      : "Board-aware · saved locally";
+  }
+  freeBtn.addEventListener("click", () => {
+    pagesChatMode = "free";
+    localStorage.setItem(PAGES_CHAT_MODE_KEY, "free");
+    syncAskRow();
+  });
+  codexBtn.addEventListener("click", () => {
+    pagesChatMode = "codex";
+    localStorage.setItem(PAGES_CHAT_MODE_KEY, "codex");
+    syncAskRow();
+  });
+  askRow.appendChild(freeBtn);
+  askRow.appendChild(codexBtn);
+  askRow.hidden = !GITHUB_PAGES_DEMO;
+  coachColumn.appendChild(askRow);
+
   const coachMessages = document.createElement("div");
   coachMessages.className = "coach-messages";
   coachColumn.appendChild(coachMessages);
@@ -1244,6 +1294,7 @@ function init() {
   chatHint.className = "chat-hint";
   chatHint.textContent = "Board-aware · saved locally";
   chatActions.appendChild(chatHint);
+  if (GITHUB_PAGES_DEMO) syncAskRow();
   const chatSend = document.createElement("button");
   chatSend.className = "chat-send";
   chatSend.type = "submit";
@@ -1870,6 +1921,102 @@ function init() {
     }
   }
 
+  /** Convert engine UCI plies to SAN for a human-readable facts line. */
+  function uciLineToSan(fen: string, pv: string[], maxPlies = 6): string[] {
+    const sans: string[] = [];
+    try {
+      const board = new Chess(fen);
+      for (const uci of pv.slice(0, maxPlies)) {
+        let move = null;
+        try {
+          move = board.move({
+            from: uci.slice(0, 2),
+            to: uci.slice(2, 4),
+            promotion: (uci[4] as "q" | "r" | "b" | "n" | undefined) ?? undefined,
+          });
+        } catch {
+          break;
+        }
+        if (!move) break;
+        sans.push(move.san);
+      }
+    } catch {
+      // Leave whatever prefix converted; facts stay best-effort.
+    }
+    return sans;
+  }
+
+  /** One-line authoritative Stockfish summary for grounding a Codex reply. */
+  function stockfishFactsText(fen: string, info: EvalInfo): string {
+    const side = fen.split(" ")[1] === "b" ? "Black" : "White";
+    let score: string;
+    if (info.scoreMate !== null && info.scoreMate !== undefined) {
+      score = info.scoreMate > 0
+        ? `mate in ${info.scoreMate} for ${side}`
+        : `${side} is getting mated in ${Math.abs(info.scoreMate)}`;
+    } else if (info.scoreCp !== null && info.scoreCp !== undefined) {
+      const pawns = (info.scoreCp / 100).toFixed(2);
+      score = `${pawns} pawns for ${side}`;
+    } else {
+      score = "no score";
+    }
+    const line = uciLineToSan(fen, info.pv).join(" ") || "(no line)";
+    return `Depth ${info.depth}, side to move ${side}: ${score}. Best line: ${line}.`;
+  }
+
+  /**
+   * Pages Codex chat path: ground the student's question with a quick
+   * browser-Stockfish eval, then one-shot it to Codex. The thinking bubble
+   * doubles as the SSE status target and is replaced by the Codex bubble.
+   */
+  async function submitCodexChat(
+    sessionId: string,
+    message: string,
+    thinkingBubble: HTMLDivElement,
+  ): Promise<void> {
+    const fen = gc.viewedFen();
+    let moves = "(starting position)";
+    try {
+      moves = gc.history().join(" ") || "(starting position)";
+    } catch {
+      // Keep the default; facts stay best-effort.
+    }
+    let facts: string | null = null;
+    try {
+      const info = await Promise.race([
+        engine.evaluateAsync(fen, 14),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 8000)),
+      ]);
+      if (info) facts = stockfishFactsText(fen, info);
+    } catch {
+      facts = null;
+    }
+    const prompt = composeCodexChessPrompt({ question: message, fen, moves, engineFacts: facts });
+    const response = await startProviderLogin(
+      "codex",
+      codexEventHandler(thinkingBubble, {
+        onLoginRequired: (verificationUrl: string, userCode: string) =>
+          addChatBubble(
+            "assistant",
+            `ChatGPT login: open ${verificationUrl} and enter code ${userCode}. That page is run by OpenAI — our site never sees your password. I'm waiting…`,
+            "Codex login",
+            false,
+          ),
+        onComplete: (text: string) => {
+          thinkingBubble.remove();
+          addChatBubble("assistant", text, "Codex");
+          try {
+            rememberCodexExchange(sessionId, text);
+          } catch {
+            // Display already succeeded; history persistence is best-effort.
+          }
+        },
+      }),
+      prompt,
+    );
+    void response;
+  }
+
   async function submitChat() {
     const message = chatInput.value.trim();
     if (!message || chatSend.disabled) return;
@@ -1885,6 +2032,23 @@ function init() {
     thinkingBubble.classList.add("typing");
     chatSend.disabled = true;
     chatInput.disabled = true;
+    // Pages Codex mode: single grounded voice (GPT wording, Stockfish
+    // facts). The template coaching bubbles stay off in this mode so the
+    // two bots never talk over each other.
+    if (GITHUB_PAGES_DEMO && pagesChatMode === "codex") {
+      try {
+        await submitCodexChat(sessionId, message, thinkingBubble);
+      } catch (error) {
+        thinkingBubble.remove();
+        const detail = error instanceof Error ? error.message : "Chat request failed";
+        addChatBubble("assistant", `I couldn't answer: ${detail}`);
+      } finally {
+        chatSend.disabled = false;
+        chatInput.disabled = false;
+        chatInput.focus();
+      }
+      return;
+    }
     try {
       const response = await sendChat(
         sessionId,
@@ -2040,7 +2204,13 @@ function init() {
     return showPromotionChooser(isWhite);
   });
   gc.setStatusCallback(showStatus);
-  gc.setCoachingCallback(showCoaching);
+  gc.setCoachingCallback((coaching) => {
+    // Codex mode on Pages is single-voice: board arrows/highlights still
+    // draw (game.ts), but the template text bubble stays off so it never
+    // talks over the Codex reply.
+    if (GITHUB_PAGES_DEMO && pagesChatMode === "codex") return;
+    showCoaching(coaching);
+  });
   gc.setPlyChangeCallback(onPlyChange);
   gc.setOpponentMoveCallback((san, method, reason) => {
     if (!san) return;

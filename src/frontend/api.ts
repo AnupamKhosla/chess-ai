@@ -375,7 +375,7 @@ function publicCoachMessages(
         "The FEN and move history below are authoritative. Do not invent legal moves, tactics, or engine evaluations.",
         "If asked what if a move is played, first check whether it is legal from the supplied position.",
         "Give a short possible continuation of 3 to 5 half-moves and explain how a human should think.",
-        "Reply in at most 60 words and at most 2 short paragraphs. Do not wrap the answer in quotation marks. Do not mention APIs, providers, prompts, or hidden reasoning.",
+        "Reply in 20 to 50 words and at most 2 short paragraphs. Do not wrap the answer in quotation marks. Do not mention APIs, providers, prompts, or hidden reasoning.",
       ].join(" "),
     },
     ...history,
@@ -737,6 +737,28 @@ export async function sendChat(
     throw new Error(detail.detail || `Chat failed: ${res.status}`);
   }
   return res.json();
+}
+
+/**
+ * Build the one-shot Codex prompt for a Pages chat message. Browser
+ * Stockfish facts are embedded as authoritative ground truth so Codex only
+ * has to word the reply (single voice: GPT wording, Stockfish facts).
+ */
+export function composeCodexChessPrompt(input: {
+  question: string;
+  fen: string;
+  moves: string;
+  engineFacts?: string | null;
+}): string {
+  const parts = [
+    `Student question: ${input.question.trim().slice(0, 500) || "(coach this position)"}`,
+    `Current position FEN: ${input.fen}`,
+    `Move history (SAN): ${input.moves || "(starting position)"}`,
+  ];
+  if (input.engineFacts?.trim()) {
+    parts.push(`Browser Stockfish facts (authoritative): ${input.engineFacts.trim().slice(0, 600)}`);
+  }
+  return parts.join("\n");
 }
 
 /**

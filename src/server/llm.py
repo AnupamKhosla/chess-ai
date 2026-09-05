@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import httpx
 
@@ -250,7 +250,7 @@ persona.
         if response_mode == "fast":
             system += """
 
-For fast conversation, answer in roughly 50-100 words, usually one compact
+For fast conversation, answer in 20 to 50 words, usually one compact
 paragraph. Lead with the concrete move or idea and avoid a long opening lecture
 unless the student asks for it. If the student asks "what if [move]", use the
 engine-backed candidate continuation supplied in the position context when
@@ -275,22 +275,35 @@ what happens. Never invent a line just to sound decisive.
                 messages.append({"role": role, "content": text})
         messages.append({"role": "user", "content": message})
         timeout = 20.0 if response_mode == "fast" else max(self._timeout, 45.0)
-        return await self._chat(messages, timeout=timeout)
+        config = self._config
+        if (
+            provider_id == "codex"
+            and response_mode == "fast"
+            and (config.effort or "auto") == "auto"
+        ):
+            # Fastest useful Codex chat: low reasoning effort unless the user
+            # explicitly picked another effort in the provider menu.
+            config = replace(config, effort="low")
+        return await self._chat(messages, timeout=timeout, config=config)
 
     async def _chat(
-        self, messages: list[dict], timeout: float | None = None
+        self,
+        messages: list[dict],
+        timeout: float | None = None,
+        config: ProviderConfig | None = None,
     ) -> str | None:
         """Send to the currently selected provider adapter."""
         t = timeout if timeout is not None else self._timeout
+        cfg = config or self._config
         self._last_provider_error = None
-        preset = preset_for(self._config.provider)
-        if preset and preset.requires_key and not self._config.api_key:
+        preset = preset_for(cfg.provider)
+        if preset and preset.requires_key and not cfg.api_key:
             self._last_provider_error = ProviderUnavailableError(
-                self._config.provider, "an API key is required"
+                cfg.provider, "an API key is required"
             )
             return None
         try:
-            return await chat_with_provider(self._config, messages, timeout=t)
+            return await chat_with_provider(cfg, messages, timeout=t)
         except ProviderUnavailableError as exc:
             self._last_provider_error = exc
             return None
