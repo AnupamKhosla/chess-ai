@@ -583,31 +583,34 @@ function init() {
       : `Sign in with ${service}`;
   }
 
-  function openCodexLoginWindow(): Window | null {
-    if (!GITHUB_PAGES_DEMO) return null;
-    return window.open("about:blank", "_blank", "noopener,noreferrer");
-  }
-
+  // NOTE: we deliberately do NOT pre-open a blank popup window. An
+  // about:blank tab opened here often never navigates (popup blockers,
+  // noopener handling) and looks like phishing. Instead the login step shows
+  // an inline link to the official OpenAI page that the user clicks.
   function codexEventHandler(
     target: HTMLElement,
-    loginWindow: Window | null,
-    onComplete?: (text: string) => void,
+    callbacks?: {
+      onLoginRequired?: (verificationUrl: string, userCode: string) => void;
+      onComplete?: (text: string) => void;
+    },
   ) {
     let streamedText = "";
     return (event: CodexSandboxEvent) => {
       if (event.type === "login_required") {
-        if (loginWindow && !loginWindow.closed) {
-          loginWindow.location.href = event.verificationUrl;
-        }
         const link = document.createElement("a");
         link.href = event.verificationUrl;
         link.target = "_blank";
         link.rel = "noreferrer noopener";
         link.textContent = "Open ChatGPT login (official OpenAI page)";
+        const code = document.createElement("code");
+        code.textContent = event.userCode;
         target.replaceChildren(
           link,
-          document.createTextNode(` · enter code ${event.userCode} · waiting…`),
+          document.createTextNode(` · enter code `),
+          code,
+          document.createTextNode(` · waiting… (we never ask for your password)`),
         );
+        callbacks?.onLoginRequired?.(event.verificationUrl, event.userCode);
       } else if (event.type === "authenticated") {
         target.textContent = "ChatGPT authenticated · Codex is coaching…";
       } else if (event.type === "delta") {
@@ -616,7 +619,7 @@ function init() {
       } else if (event.type === "complete") {
         if (event.text) {
           target.textContent = `Codex: ${event.text}`;
-          onComplete?.(event.text);
+          callbacks?.onComplete?.(event.text);
         }
       } else if (event.type === "error") {
         target.textContent = event.message;
@@ -696,7 +699,6 @@ function init() {
     const preset = providerPresets.find((item) => item.id === providerId);
     if (!preset || (preset.kind !== "codex-cli" && preset.kind !== "claude-cli")) return;
     providerLoginBtn.disabled = true;
-    const loginWindow = providerId === "codex" ? openCodexLoginWindow() : null;
     try {
       if (preset.authenticated) {
         const response = await configureProvider({
@@ -712,7 +714,7 @@ function init() {
       } else {
         const response = await startProviderLogin(
           providerId,
-          providerId === "codex" ? codexEventHandler(providerStatus, loginWindow) : undefined,
+          providerId === "codex" ? codexEventHandler(providerStatus) : undefined,
         );
         providerStatus.textContent = response.message || "Login started in a browser window.";
         if (providerId === "codex" && GITHUB_PAGES_DEMO) {
@@ -1281,9 +1283,11 @@ function init() {
         chatHint.textContent = `${response.active.label} active · AI directs opponent moves`;
         quickLoginBtn.textContent = "ChatGPT active";
       } else {
-        const loginWindow = openCodexLoginWindow();
         // Coach the actual board on the live site, not a generic ping.
         // The login stays one-shot: a fresh device-code login per response.
+        // No popup is opened: the login step renders an inline link to the
+        // official OpenAI page that the user clicks (popup blockers and
+        // blank-tab handling made auto-opened tabs unreliable).
         let codexPrompt: string | undefined;
         try {
           const fen = gc.viewedFen();
@@ -1292,12 +1296,21 @@ function init() {
         } catch {
           codexPrompt = undefined;
         }
-        const onCodexComplete = GITHUB_PAGES_DEMO
-          ? (text: string) => addChatBubble("assistant", text, "Codex")
+        const codexCallbacks = GITHUB_PAGES_DEMO
+          ? {
+              onLoginRequired: (verificationUrl: string, userCode: string) =>
+                addChatBubble(
+                  "assistant",
+                  `ChatGPT login: open ${verificationUrl} and enter code ${userCode}. That page is run by OpenAI — our site never sees your password. I'm waiting…`,
+                  "Codex login",
+                  false,
+                ),
+              onComplete: (text: string) => addChatBubble("assistant", text, "Codex"),
+            }
           : undefined;
         const response = await startProviderLogin(
           "codex",
-          GITHUB_PAGES_DEMO ? codexEventHandler(chatHint, loginWindow, onCodexComplete) : undefined,
+          GITHUB_PAGES_DEMO ? codexEventHandler(chatHint, codexCallbacks) : undefined,
           codexPrompt,
         );
         chatHint.textContent = response.message || "Finish ChatGPT login, then click here again.";
