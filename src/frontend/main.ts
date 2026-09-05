@@ -2796,6 +2796,54 @@ function init() {
   });
 
   // --- Coaching display ---
+  // --- Memory: the coach remembers YOUR habits, not just this move ---
+  // Counts tactical themes in your mistakes per calendar day (local only).
+  // On the 3rd repeat of a theme, the coach names the pattern instead of
+  // the move — that is the difference between a tool and a coach.
+  const MOTIF_KEY = "chess-teacher-motif-counts";
+  const MOTIF_WORDS: Array<{ motif: string; words: string[]; label: string }> = [
+    { motif: "fork", words: ["fork"], label: "forks" },
+    { motif: "hanging", words: ["hanging"], label: "hung pieces" },
+    { motif: "pin", words: ["pinned", "pin"], label: "pins" },
+    { motif: "skewer", words: ["skewer"], label: "skewers" },
+  ];
+
+  function loadMotifCounts(): { date: string; counts: Record<string, number> } {
+    const today = new Date().toISOString().slice(0, 10);
+    try {
+      const raw = localStorage.getItem(MOTIF_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { date?: string; counts?: Record<string, number> };
+        if (parsed.date === today && parsed.counts) return { date: today, counts: parsed.counts };
+      }
+    } catch {
+      // Start fresh on corrupt data.
+    }
+    return { date: today, counts: {} };
+  }
+
+  function noteMistakeMotifs(summary: string): string | null {
+    const text = (summary || "").toLowerCase();
+    if (!text) return null;
+    const store = loadMotifCounts();
+    let repeated: string | null = null;
+    for (const { motif, words, label } of MOTIF_WORDS) {
+      if (words.some((word) => text.includes(word))) {
+        const count = (store.counts[motif] || 0) + 1;
+        store.counts[motif] = count;
+        if (count >= 3 && !repeated) {
+          repeated = `That's the ${count === 3 ? "third" : `${count}th`} time today — ${label}. Pattern, not accident. Let's fix the habit, not the move.`;
+        }
+      }
+    }
+    try {
+      localStorage.setItem(MOTIF_KEY, JSON.stringify(store));
+    } catch {
+      // Counts are nice-to-have; coaching must never break.
+    }
+    return repeated;
+  }
+
   function showCoaching(coaching: CoachingData) {
     const debugEnabled = localStorage.getItem("chess-teacher-debug") === "true";
 
@@ -2840,6 +2888,20 @@ function init() {
     coachMessages.appendChild(msg);
     coachMessages.scrollTop = coachMessages.scrollHeight;
     speakCoach(coaching.message);
+
+    // Memory callback: on repeated personal themes, name the pattern.
+    if (coaching.quality === "mistake" || coaching.quality === "blunder") {
+      try {
+        const memory = noteMistakeMotifs(coaching.tactics_summary || "");
+        if (memory) {
+          const memoryBubble = addChatBubble("assistant", memory, coachDisplayName(), false);
+          memoryBubble.classList.add("coach-memory");
+          speakCoach(memory);
+        }
+      } catch {
+        // Memory is decorative; coaching must never break.
+      }
+    }
 
     // Show eval bar when coaching fires
     evalBarWrap.classList.add("visible");

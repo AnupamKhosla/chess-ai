@@ -77,6 +77,7 @@ export interface CoachingData {
   highlights: HighlightData[];
   severity: string;
   debug_prompt?: string;
+  tactics_summary?: string;
   source?: "stockfish" | "ai+stockfish" | "local-ai+stockfish";
 }
 

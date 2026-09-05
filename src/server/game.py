@@ -614,6 +614,7 @@ is intentional unless the facts support it."""
             ],
             "severity": coaching_data.severity,
             "debug_prompt": coaching_data.debug_prompt,
+            "tactics_summary": coaching_data.tactics_summary,
             "source": coaching_data.source,
         }
 
