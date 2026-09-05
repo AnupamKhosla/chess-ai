@@ -8,6 +8,7 @@ import {
   GITHUB_PAGES_DEMO,
   configureProvider,
   getProviders,
+  rememberCodexExchange,
   sendChat,
   startProviderLogin,
 } from "./api";
@@ -1305,7 +1306,15 @@ function init() {
                   "Codex login",
                   false,
                 ),
-              onComplete: (text: string) => addChatBubble("assistant", text, "Codex"),
+              onComplete: (text: string) => {
+                addChatBubble("assistant", text, "Codex");
+                try {
+                  const sessionId = gc.getSessionId();
+                  if (sessionId) rememberCodexExchange(sessionId, text);
+                } catch {
+                  // Display already succeeded; history persistence is best-effort.
+                }
+              },
             }
           : undefined;
         const response = await startProviderLogin(
@@ -1313,7 +1322,12 @@ function init() {
           GITHUB_PAGES_DEMO ? codexEventHandler(chatHint, codexCallbacks) : undefined,
           codexPrompt,
         );
-        chatHint.textContent = response.message || "Finish ChatGPT login, then click here again.";
+        // Keep the hint short: the full Codex reply already lives in a Codex
+        // bubble above (and in saved history). Also say plainly who the chat
+        // box talks to, so nobody mistakes Free Weak AI for ChatGPT.
+        chatHint.textContent = GITHUB_PAGES_DEMO
+          ? "Codex replied above (one reply per login) · the chat box below still talks to Free Weak AI"
+          : response.message || "Finish ChatGPT login, then click here again.";
         quickLoginBtn.textContent = GITHUB_PAGES_DEMO ? "Ask Codex again" : "Finish ChatGPT login";
       }
     } catch (error) {
@@ -1843,7 +1857,11 @@ function init() {
   function renderChatHistory(history: ChatMessage[]) {
     coachMessages.innerHTML = "";
     for (const entry of history) {
-      addChatBubble(entry.role, entry.text, undefined, false);
+      if (entry.role === "assistant" && entry.text.startsWith("[Codex] ")) {
+        addChatBubble(entry.role, entry.text.slice("[Codex] ".length), "Codex", false);
+      } else {
+        addChatBubble(entry.role, entry.text, undefined, false);
+      }
     }
   }
 
@@ -1874,7 +1892,7 @@ function init() {
         "assistant",
         studentFacingProviderText(response.message),
         response.source === "ai"
-          ? "AI coach"
+          ? "Free Weak AI"
           : response.source === "local"
             ? "Free local coach"
             : "Coach",

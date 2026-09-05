@@ -367,11 +367,15 @@ function publicCoachMessages(
     {
       role: "system",
       content: [
-        "You are a concise chess coach inside a browser chess app.",
+        "You are Free Weak AI, a small hosted chess explainer inside a browser chess app.",
+        "You are not ChatGPT, not Codex, not Stockfish, and not a human coach.",
+        "If asked who you are or whether you are ChatGPT, answer honestly: you are Free Weak AI. Replies from the user's own ChatGPT/Codex login appear separately labeled Codex.",
+        "Never claim to be ChatGPT, Codex, or any other model. Never argue about what the student asked; if unclear, ask one short clarifying question.",
+        "Stay friendly and brief. Do not lecture about language or behavior; just steer back to chess in one short sentence.",
         "The FEN and move history below are authoritative. Do not invent legal moves, tactics, or engine evaluations.",
         "If asked what if a move is played, first check whether it is legal from the supplied position.",
         "Give a short possible continuation of 3 to 5 half-moves and explain how a human should think.",
-        "Keep the answer under 90 words. Do not mention APIs, providers, prompts, or hidden reasoning.",
+        "Reply in at most 60 words and at most 2 short paragraphs. Do not wrap the answer in quotation marks. Do not mention APIs, providers, prompts, or hidden reasoning.",
       ].join(" "),
     },
     ...history,
@@ -386,16 +390,34 @@ function publicCoachMessages(
   ];
 }
 
+function cleanPublicAiText(text: string): string {
+  let cleaned = text
+    .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, "")
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .trim();
+  // Some small models wrap the whole answer in quotation marks.
+  if (
+    cleaned.length >= 2 &&
+    ((cleaned.startsWith('"') && cleaned.endsWith('"')) ||
+      (cleaned.startsWith("'") && cleaned.endsWith("'")))
+  ) {
+    cleaned = cleaned.slice(1, -1).trim();
+  }
+  // Hard stop against runaway answers: cut at a sentence boundary.
+  if (cleaned.length > 1000) {
+    const cut = cleaned.lastIndexOf(".", 1000);
+    cleaned = (cut > 400 ? cleaned.slice(0, cut + 1) : cleaned.slice(0, 1000)).trim() + " …";
+  }
+  return cleaned;
+}
+
 function publicAiText(payload: unknown): string {
   const choice = (payload as {
     choices?: Array<{ message?: { content?: unknown } }>;
   })?.choices?.[0];
   const content = choice?.message?.content;
   if (typeof content === "string" && content.trim()) {
-    const cleaned = content
-      .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, "")
-      .replace(/<think>[\s\S]*?<\/think>/gi, "")
-      .trim();
+    const cleaned = cleanPublicAiText(content);
     if (cleaned) return cleaned;
   }
   if (Array.isArray(content)) {
@@ -405,10 +427,7 @@ function publicAiText(payload: unknown): string {
         : "")
       .join("")
       .trim();
-    const cleaned = text
-      .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, "")
-      .replace(/<think>[\s\S]*?<\/think>/gi, "")
-      .trim();
+    const cleaned = cleanPublicAiText(text);
     if (cleaned) return cleaned;
   }
   throw new Error("Free Weak AI returned no answer. Try again shortly.");
@@ -718,6 +737,25 @@ export async function sendChat(
     throw new Error(detail.detail || `Chat failed: ${res.status}`);
   }
   return res.json();
+}
+
+/**
+ * Persist a Codex one-shot reply into the demo chat history so it survives
+ * reloads and stays visible to later Free Weak AI turns. No-op outside the
+ * static demo (the local server owns its own history).
+ */
+export function rememberCodexExchange(sessionId: string, codexText: string): void {
+  if (!STATIC_DEMO) return;
+  const session = getDemoSession(sessionId);
+  if (!session) return;
+  const text = codexText.trim().slice(0, 2_000);
+  if (!text) return;
+  session.chatHistory.push(
+    { role: "user", text: "Asked Codex about the current position." },
+    { role: "assistant", text: `[Codex] ${text}` },
+  );
+  session.chatHistory = session.chatHistory.slice(-40);
+  saveDemoSession(sessionId, session);
 }
 
 export async function getProviders(): Promise<ProvidersResponse> {
