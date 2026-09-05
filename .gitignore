@@ -1,5 +1,7 @@
 .DS_Store
 .coverage
+# Competitor research (clones, snapshots, scratch) — never committed.
+research/
 MEMORY.md
 PLAN.md
 .direnv/

@@ -290,6 +290,7 @@ class GameManager:
                 playing_style=state.opponent_style,
                 response_mode=response_mode if response_mode in {"fast", "deep"} else "fast",
                 opening_context=opening_context(state.board),
+                thread_key=f"game:{session_id}",
             )
             if response:
                 response_source = "ai"

@@ -25,7 +25,7 @@ import chess
 import pytest
 
 from server.analysis import TacticalMotifs
-from server.coach import _classify_move, _cp_value, MoveQuality
+from server.coach import _classify_move, _cp_value, MoveQuality, assess_move, win_percent
 from server.elo_profiles import get_profile
 from server.engine import EngineAnalysis, Evaluation, LineInfo
 from server.game_tree import GameTree, build_coaching_tree
@@ -377,8 +377,21 @@ async def _build_eval_scenario(scenario: dict) -> dict:
             cp_loss = cp_after - cp_before
         cp_loss = max(0, cp_loss)
 
+        # Single source of truth: assess_move owns classification (win%
+        # model + missed-mate override). The helper only reports it.
+        assessment = assess_move(
+            board_before=board,
+            board_after=temp,
+            player_move_uci=student_uci,
+            eval_before=eval_before,
+            eval_after=eval_after,
+            best_move_uci=eval_before.best_move or "",
+        )
         is_best = student_uci == (eval_before.best_move or "")
-        quality = _classify_move(cp_loss, is_best, position_is_sharp=False)
+        if assessment is None:
+            quality = MoveQuality.BRILLIANT if is_best else MoveQuality.GOOD
+        else:
+            quality = assessment.quality
 
         prompt = serialize_report(
             tree,

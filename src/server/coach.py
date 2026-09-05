@@ -66,6 +66,26 @@ class CoachingResponse:
 _MATE_CP = 10_000
 
 
+def win_percent(cp: int) -> float:
+    """Win probability (0-100) from White's perspective for a centipawn eval.
+
+    Lichess logistic curve. Mate scores mapped through :func:`_cp_value`
+    saturate naturally near 100/0. Classifying by win-probability *drop*
+    (not raw centipawns) is what makes a 200cp swing in a +8 position
+    correctly *not* a blunder — and a quiet 60cp slide in a level endgame
+    correctly a mistake.
+    """
+    import math
+
+    return 50.0 + 50.0 * (2.0 / (1.0 + math.exp(-0.00368208 * cp)) - 1.0)
+
+
+# Win-probability-drop thresholds in percentage points (inclusive lower bounds).
+_BLUNDER_WINDROP = 20.0
+_MISTAKE_WINDROP = 10.0
+_INACCURACY_WINDROP = 5.0
+
+
 def _cp_value(ev: Evaluation) -> int:
     """Convert an Evaluation to a single centipawn integer.
 
@@ -82,25 +102,19 @@ def _cp_value(ev: Evaluation) -> int:
     return 0
 
 
-# Centipawn-loss thresholds (inclusive lower bounds).
-_BLUNDER_THRESHOLD = 200
-_MISTAKE_THRESHOLD = 100
-_INACCURACY_THRESHOLD = 50
-
-
 def _classify_move(
-    cp_loss: int,
+    win_drop: float,
     is_best_move: bool,
     position_is_sharp: bool,
 ) -> MoveQuality:
-    """Classify a move based on centipawn loss and context."""
+    """Classify a move by win-probability drop (percentage points)."""
     if is_best_move and position_is_sharp:
         return MoveQuality.BRILLIANT
-    if cp_loss >= _BLUNDER_THRESHOLD:
+    if win_drop >= _BLUNDER_WINDROP:
         return MoveQuality.BLUNDER
-    if cp_loss >= _MISTAKE_THRESHOLD:
+    if win_drop >= _MISTAKE_WINDROP:
         return MoveQuality.MISTAKE
-    if cp_loss >= _INACCURACY_THRESHOLD:
+    if win_drop >= _INACCURACY_WINDROP:
         return MoveQuality.INACCURACY
     return MoveQuality.GOOD
 
@@ -118,7 +132,7 @@ def _generate_message(
     quality: MoveQuality,
     player_move_san: str,
     best_move_san: str,
-    cp_loss: int,
+    win_drop: float,
     is_best_move: bool,
     tactics_summary: str,
 ) -> str:
@@ -132,7 +146,9 @@ def _generate_message(
         return " ".join(parts)
 
     label = quality.value.capitalize()
-    parts.append(f"{label}: {player_move_san} loses about {cp_loss / 100:.1f} pawns.")
+    parts.append(
+        f"{label}: {player_move_san} drops your winning chances by about {win_drop:.0f}%."
+    )
 
     if not is_best_move:
         parts.append(f"The best move was {best_move_san}.")
@@ -245,12 +261,37 @@ def assess_move(
     # For Black, losing means cp increased (better for White = worse for Black).
     if board_before.turn == chess.WHITE:
         cp_loss = cp_before - cp_after
+        mover_before, mover_after = cp_before, cp_after
     else:
         cp_loss = cp_after - cp_before
+        mover_before, mover_after = -cp_before, -cp_after
+
+    # Classify by win-probability drop from the mover's perspective, so a big
+    # centipawn swing in an already-decided position stays routine while a
+    # quiet slide in a level position is correctly flagged.
+    win_drop = win_percent(mover_before) - win_percent(mover_after)
 
     is_best_move = player_move_uci == best_move_uci
 
-    quality = _classify_move(cp_loss, is_best_move, position_is_sharp)
+    quality = _classify_move(win_drop, is_best_move, position_is_sharp)
+
+    # Missed mate override: having a forced mate and neither delivering it
+    # nor keeping one is always instructive, even when the win-probability
+    # drop looks small (mate-in-N and +6 both read ~100%).
+    if board_before.turn == chess.WHITE:
+        mate_before = eval_before.score_mate
+        mate_after = eval_after.score_mate
+    else:
+        mate_before = -eval_before.score_mate if eval_before.score_mate is not None else None
+        mate_after = -eval_after.score_mate if eval_after.score_mate is not None else None
+    missed_mate = (
+        mate_before is not None
+        and mate_before > 0
+        and not board_after.is_checkmate()
+        and not (mate_after is not None and mate_after > 0)
+    )
+    if missed_mate:
+        quality = MoveQuality.BLUNDER
 
     # Coach stays silent for routine good moves.
     if quality == MoveQuality.GOOD:
@@ -265,7 +306,7 @@ def assess_move(
         quality=quality,
         player_move_san=player_move_san,
         best_move_san=best_move_san,
-        cp_loss=cp_loss,
+        win_drop=max(0.0, win_drop),
         is_best_move=is_best_move,
         tactics_summary=tactics_summary,
     )
@@ -279,7 +320,7 @@ def assess_move(
         tactics=tactics,
     )
 
-    severity = min(100, max(0, cp_loss))
+    severity = min(100, max(0, round(win_drop * 2)))
 
     return CoachingResponse(
         quality=quality,

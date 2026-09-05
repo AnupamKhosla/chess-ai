@@ -254,3 +254,53 @@ class TestTacticsSummaryField:
         assert result is not None
         assert hasattr(result, "tactics_summary")
         assert isinstance(result.tactics_summary, str)
+
+
+class TestWinPercentClassification:
+    """Win-probability drops classify better than raw centipawns."""
+
+    def test_big_swing_in_decided_position_stays_quiet(self):
+        """Losing 20cp from +800 to +780 barely moves win% — routine, silent."""
+        board_before = chess.Board()
+        board_after = chess.Board()
+        board_after.push_uci("e2e4")
+        result = assess_move(
+            board_before=board_before,
+            board_after=board_after,
+            player_move_uci="e2e4",
+            eval_before=_eval(cp=800),
+            eval_after=_eval(cp=780),
+            best_move_uci="d2d4",
+        )
+        assert result is None
+
+    def test_quiet_slide_in_level_position_flags_mistake(self):
+        """Losing ~120cp around equality costs real winning chances."""
+        board_before = chess.Board()
+        board_after = chess.Board()
+        board_after.push_uci("e2e4")
+        result = assess_move(
+            board_before=board_before,
+            board_after=board_after,
+            player_move_uci="e2e4",
+            eval_before=_eval(cp=60),
+            eval_after=_eval(cp=-60),
+            best_move_uci="d2d4",
+        )
+        assert result is not None
+        assert result.quality == MoveQuality.MISTAKE
+
+    def test_message_quotes_winning_chances(self):
+        board_before = chess.Board()
+        board_after = chess.Board()
+        board_after.push_uci("e2e4")
+        result = assess_move(
+            board_before=board_before,
+            board_after=board_after,
+            player_move_uci="e2e4",
+            eval_before=_eval(cp=50),
+            eval_after=_eval(cp=-200),
+            best_move_uci="d2d4",
+        )
+        assert result is not None
+        assert "winning chances" in result.message

@@ -128,6 +128,7 @@ def build_coaching_system_prompt(
     move_quality: str | None = None,
     elo_profile: str | None = None,
     verbosity: str = "normal",
+    guard_block: str = "",
 ) -> str:
     """Compose the full coaching system prompt from independent blocks.
 
@@ -143,6 +144,8 @@ def build_coaching_system_prompt(
         ``"competitive"``, or ``None`` to omit ELO guidance.
     verbosity:
         ``"terse"``, ``"normal"`` (default), or ``"verbose"``.
+    guard_block:
+        Persona-specific hard guardrails. Style never overrides these.
     """
     sections: list[str] = [_BASE_TEMPLATE]
 
@@ -153,6 +156,18 @@ def build_coaching_system_prompt(
         "color the explanation, but never sacrifice clarity or chess insight "
         "for stylistic flourishes."
     )
+
+    # Universal identity/honesty guardrails (apply to every persona).
+    sections.append(
+        "\n\nHard rules — these override persona style, always:\n"
+        "Never claim to be ChatGPT, Codex, Claude, Stockfish, or any real "
+        "person. Never argue about what the student asked; ask one short "
+        "clarifying question instead. Never lecture about language or "
+        "behavior — steer back to chess in one short sentence. If a move is "
+        "bad, say so plainly; never hide a mistake behind positivity."
+    )
+    if guard_block:
+        sections.append(f"\n\nPersona guardrails:\n{guard_block}")
 
     # Move quality
     if move_quality is not None and move_quality in _QUALITY_GUIDANCE:

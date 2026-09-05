@@ -117,6 +117,7 @@ class ChessTeacher:
             move_quality=move_quality,
             elo_profile=elo_profile,
             verbosity=verbosity,
+            guard_block=persona.guard_block,
         )
 
     async def explain_move(
@@ -212,6 +213,7 @@ class ChessTeacher:
         playing_style: str = "balanced",
         response_mode: str = "fast",
         opening_context: str = "",
+        thread_key: str | None = None,
     ) -> str | None:
         """Continue a board-aware coaching conversation.
 
@@ -284,13 +286,14 @@ what happens. Never invent a line just to sound decisive.
             # Fastest useful Codex chat: low reasoning effort unless the user
             # explicitly picked another effort in the provider menu.
             config = replace(config, effort="low")
-        return await self._chat(messages, timeout=timeout, config=config)
+        return await self._chat(messages, timeout=timeout, config=config, thread_key=thread_key)
 
     async def _chat(
         self,
         messages: list[dict],
         timeout: float | None = None,
         config: ProviderConfig | None = None,
+        thread_key: str | None = None,
     ) -> str | None:
         """Send to the currently selected provider adapter."""
         t = timeout if timeout is not None else self._timeout
@@ -303,7 +306,7 @@ what happens. Never invent a line just to sound decisive.
             )
             return None
         try:
-            return await chat_with_provider(cfg, messages, timeout=t)
+            return await chat_with_provider(cfg, messages, timeout=t, thread_key=thread_key)
         except ProviderUnavailableError as exc:
             self._last_provider_error = exc
             return None

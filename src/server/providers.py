@@ -385,7 +385,73 @@ def _codex_text(stdout: str) -> str | None:
             turn = event.get("turn")
             if isinstance(turn, dict) and isinstance(turn.get("final_text"), str):
                 final = turn["final_text"].strip()
-    return final
+    if final:
+        return final
+    # Schema-drift fallback: last agent/assistant-flavored text anywhere.
+    return _walk_codex_text(stdout)
+
+
+def _walk_codex_text(stdout: str) -> str | None:
+    """Walk arbitrary Codex JSONL for the last agent-like text payload."""
+    candidates: list[str] = []
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        stack: list[object] = [event]
+        event_type = str(event.get("type", "")).lower() if isinstance(event, dict) else ""
+        while stack:
+            value = stack.pop()
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if (
+                        key in {"text", "content", "message", "final_output"}
+                        and isinstance(child, str)
+                        and child.strip()
+                        and (
+                            "agent" in event_type
+                            or "assistant" in event_type
+                            or "completed" in event_type
+                            or key == "final_output"
+                        )
+                    ):
+                        candidates.append(child.strip())
+                    else:
+                        stack.append(child)
+            elif isinstance(value, list):
+                stack.extend(value)
+    return candidates[-1] if candidates else None
+
+
+def _extract_codex_thread(stdout: str) -> str | None:
+    """Find a resumable Codex thread/session id, tolerating schema drift."""
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        stack: list[object] = [event]
+        while stack:
+            value = stack.pop()
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if (
+                        key in {"thread_id", "threadId", "session_id", "conversation_id"}
+                        and isinstance(child, str)
+                        and child.strip()
+                    ):
+                        return child.strip()
+                    stack.append(child)
+            elif isinstance(value, list):
+                stack.extend(value)
+    return None
+
+
+# Resumable Codex threads, keyed by caller-supplied thread key (e.g. game id).
+# Lets follow-up turns reuse the model-side thread instead of re-sending
+# full history every message. Best-effort: any failure falls back to fresh.
+_CODEX_THREADS: dict[str, str] = {}
 
 
 def _claude_text(stdout: str) -> str | None:
@@ -413,6 +479,7 @@ async def _cli(
     config: ProviderConfig,
     messages: list[dict[str, Any]],
     timeout: float,
+    thread_key: str | None = None,
 ) -> str | None:
     preset = preset_for(config.provider)
     if not preset or not preset.cli_command:
@@ -422,14 +489,28 @@ async def _cli(
 
     prompt = _messages_to_prompt(messages)
     if config.provider == "codex":
+        # Not every model supports every effort label (e.g. Luna rejects
+        # "minimal"); fold to the closest widely-supported value.
+        effort = {"minimal": "low"}.get(config.effort, config.effort)
+        # Resumable game threads must persist their rollout, so --ephemeral
+        # is only used for one-off calls without a thread key.
+        resumable = thread_key is not None
         command = [
             preset.cli_command, "exec", "--json", "--sandbox", "read-only",
-            "--ephemeral", "--skip-git-repo-check", "-",
+            "--disable", "shell_tool", "--disable", "unified_exec",
+            *([] if resumable else ["--ephemeral"]),
+            "--skip-git-repo-check", "-",
         ]
         if config.model and config.model != "default":
             command[3:3] = ["--model", config.model]
-        if config.effort != "auto":
-            command[3:3] = ["--config", f"model_reasoning_effort={config.effort}"]
+        if effort != "auto":
+            command[3:3] = ["--config", f"model_reasoning_effort={effort}"]
+        resume_id = _CODEX_THREADS.get(thread_key) if thread_key else None
+        if resume_id:
+            # `exec resume <id> -`: continue the model-side thread so
+            # follow-ups don't re-send (and re-bill) full history. The
+            # trailing "-" stdin marker must stay last.
+            command = [*command[:-1], "resume", resume_id, "-"]
         extract = _codex_text
     else:
         command = [
@@ -465,13 +546,21 @@ async def _cli(
     if process.returncode != 0:
         detail = stderr.decode("utf-8", errors="replace").strip()
         raise RuntimeError(detail or f"{preset.label} exited with code {process.returncode}")
-    return extract(stdout.decode("utf-8", errors="replace"))
+    text = stdout.decode("utf-8", errors="replace")
+    if config.provider == "codex" and thread_key:
+        thread_id = _extract_codex_thread(text)
+        if thread_id:
+            _CODEX_THREADS[thread_key] = thread_id
+        else:
+            _CODEX_THREADS.pop(thread_key, None)
+    return extract(text)
 
 
 async def chat_with_provider(
     config: ProviderConfig,
     messages: list[dict[str, Any]],
     timeout: float = 30.0,
+    thread_key: str | None = None,
 ) -> str | None:
     """Send a chat request through the selected provider.
 
@@ -488,7 +577,7 @@ async def chat_with_provider(
         if config.kind == "gemini":
             return await _gemini(config, messages, timeout)
         if config.kind in {"codex-cli", "claude-cli"}:
-            return await _cli(config, messages, timeout)
+            return await _cli(config, messages, timeout, thread_key=thread_key)
         return await _openai_compatible(config, messages, timeout)
     except httpx.HTTPStatusError as exc:
         status_code = exc.response.status_code if exc.response is not None else None

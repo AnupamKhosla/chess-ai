@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import chess
 
-from server.coach import _classify_move, _cp_value, MoveQuality
+from server.coach import _classify_move, _cp_value, MoveQuality, win_percent
 from server.elo_profiles import get_profile
 from server.engine import EngineAnalysis
 from server.game_tree import build_coaching_tree
@@ -265,7 +265,13 @@ async def evaluate_scenario(engine, teacher, scenario, profile):
 
     cp_loss = max(0, cp_loss)
     is_best = student_uci == (eval_before.best_move or "")
-    quality = _classify_move(cp_loss, is_best, position_is_sharp=False)
+    mover_before = cp_before if board.turn == chess.WHITE else -cp_before
+    mover_after = cp_after if board.turn == chess.WHITE else -cp_after
+    quality = _classify_move(
+        win_percent(mover_before) - win_percent(mover_after),
+        is_best,
+        position_is_sharp=False,
+    )
 
     # Generate prompt
     prompt = serialize_report(

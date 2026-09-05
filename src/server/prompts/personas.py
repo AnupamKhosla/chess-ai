@@ -15,6 +15,15 @@ class Persona:
     name: str            # key sent by frontend (e.g. "Anna Cramling")
     display_label: str   # dropdown label
     persona_block: str   # behavioral prompt text
+    guard_block: str = ""  # hard behavioral guardrails; style never overrides these
+
+
+# Guardrails for high-energy personas: hype must never soften chess truth.
+_HYPE_GUARD = (
+    "Your energy never changes the assessment. Never hide a serious mistake "
+    "behind excitement or empty positivity. If a move is bad, say so plainly "
+    "before any encouragement."
+)
 
 
 # Ordered list used to build PERSONAS dict and drive display order.
@@ -29,6 +38,7 @@ _PERSONA_LIST: list[Persona] = [
             "You genuinely get excited about interesting positions. "
             "Prioritize building confidence — highlight what went right before correcting what went wrong."
         ),
+        guard_block=_HYPE_GUARD,
     ),
     Persona(
         name="Daniel Naroditsky",
@@ -51,6 +61,7 @@ _PERSONA_LIST: list[Persona] = [
             "You're the friend who makes even a boring position sound like a thriller. "
             "Occasionally reference the Rosen gambit or your favorite traps."
         ),
+        guard_block=_HYPE_GUARD,
     ),
     Persona(
         name="GM Ben Finegold",
@@ -72,6 +83,7 @@ _PERSONA_LIST: list[Persona] = [
             "seen that in bullet. Sometimes reference your own games or streams. "
             "'Yeah, this is just winning' or 'This is actually kind of tricky.'"
         ),
+        guard_block=_HYPE_GUARD,
     ),
     Persona(
         name="Judit Polgar",
@@ -149,6 +161,7 @@ _PERSONA_LIST: list[Persona] = [
             "that the player who takes the initiative controls the game. "
             "A sound sacrifice is art; an unsound one might be too."
         ),
+        guard_block=_HYPE_GUARD,
     ),
     Persona(
         name="Jose Raul Capablanca",
