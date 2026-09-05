@@ -100,6 +100,7 @@ const STATIC_DEMO = GITHUB_PAGES_DEMO ||
 const PUBLIC_AI_BASE_URL = "https://api.llm7.io/v1";
 const PUBLIC_AI_MODEL = "mistral-Nemo-Instruct-2407";
 const CODEX_SANDBOX_API_URL = "https://chess-ai-codex-sandbox.vercel.app/api/codex";
+export const CODEX_SANDBOX_SOURCE_URL = "https://github.com/AnupamKhosla/chess-ai-codex-sandbox";
 const PUBLIC_AI_COOLDOWN_MS = 7_000;
 const PUBLIC_AI_LAST_REQUEST_KEY = "chess-teacher-public-ai-last-request";
 let publicAiLastRequestAt = 0;
@@ -233,19 +234,24 @@ export type CodexSandboxEvent =
 /**
  * Run the public one-shot Codex test. The function owns the login only for
  * this request and deletes its temporary session after the response.
+ * An optional chess-aware message can be supplied; otherwise a generic
+ * connectivity prompt is used.
  */
 export async function runCodexSandboxTest(
   onEvent?: (event: CodexSandboxEvent) => void,
+  message?: string,
 ): Promise<{ text: string }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 280_000);
+  const prompt = message?.trim().slice(0, 2_000) ||
+    "Confirm that Codex is connected and ready to coach a chess position.";
   try {
     const response = await fetch(CODEX_SANDBOX_API_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         action: "login_and_test",
-        message: "Confirm that Codex is connected and ready to coach a chess position.",
+        message: prompt,
       }),
       signal: controller.signal,
     });
@@ -745,7 +751,7 @@ export async function getProviders(): Promise<ProvidersResponse> {
             effort_options: codex.effort_options,
             requires_key: false,
             cli_command: null,
-            help: "Temporary one-response test. Your ChatGPT login is held only in the function process and deleted afterward.",
+            help: "One response per login. Login happens only on the official auth.openai.com page; the backend source is public: https://github.com/AnupamKhosla/chess-ai-codex-sandbox",
             installed: true,
             authenticated: false,
             active: false,
@@ -812,13 +818,14 @@ export async function configureProvider(config: {
 export async function startProviderLogin(
   provider: string,
   onEvent?: (event: CodexSandboxEvent) => void,
+  message?: string,
 ): Promise<{
   status: string;
   provider: string;
   message?: string;
 }> {
   if (GITHUB_PAGES_DEMO && provider === "codex") {
-    const result = await runCodexSandboxTest(onEvent);
+    const result = await runCodexSandboxTest(onEvent, message);
     return {
       status: "completed",
       provider,

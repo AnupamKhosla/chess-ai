@@ -53,6 +53,12 @@ small anonymous free language-model endpoint directly from the browser:
   minute (with an hourly cap) and can be temporarily unavailable
 - the browser sends the current FEN, SAN move history, and the student's
   question; failures are shown honestly instead of being replaced by fake AI
+- **ChatGPT / Codex login** — one Codex-coached reply about the current
+  position per login, via the public backend at
+  `https://github.com/AnupamKhosla/chess-ai-codex-sandbox`
+  (live at `https://chess-ai-codex-sandbox.vercel.app`). Login happens only
+  on the official `auth.openai.com` page; our pages never see your password
+  and the backend deletes its temporary session after each response.
 
 This public route is intentionally limited to short explanations. The local
 FastAPI app remains the full Stockfish-plus-provider architecture described

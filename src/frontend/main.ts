@@ -588,7 +588,11 @@ function init() {
     return window.open("about:blank", "_blank", "noopener,noreferrer");
   }
 
-  function codexEventHandler(target: HTMLElement, loginWindow: Window | null) {
+  function codexEventHandler(
+    target: HTMLElement,
+    loginWindow: Window | null,
+    onComplete?: (text: string) => void,
+  ) {
     let streamedText = "";
     return (event: CodexSandboxEvent) => {
       if (event.type === "login_required") {
@@ -599,7 +603,7 @@ function init() {
         link.href = event.verificationUrl;
         link.target = "_blank";
         link.rel = "noreferrer noopener";
-        link.textContent = "Open ChatGPT login";
+        link.textContent = "Open ChatGPT login (official OpenAI page)";
         target.replaceChildren(
           link,
           document.createTextNode(` · enter code ${event.userCode} · waiting…`),
@@ -609,6 +613,11 @@ function init() {
       } else if (event.type === "delta") {
         streamedText += event.text;
         target.textContent = streamedText ? `Codex: ${streamedText}` : "Codex is answering…";
+      } else if (event.type === "complete") {
+        if (event.text) {
+          target.textContent = `Codex: ${event.text}`;
+          onComplete?.(event.text);
+        }
       } else if (event.type === "error") {
         target.textContent = event.message;
       }
@@ -707,7 +716,7 @@ function init() {
         );
         providerStatus.textContent = response.message || "Login started in a browser window.";
         if (providerId === "codex" && GITHUB_PAGES_DEMO) {
-          providerLoginBtn.textContent = "Run Codex test again";
+          providerLoginBtn.textContent = "Ask Codex again";
         }
       }
     } catch (error) {
@@ -882,7 +891,7 @@ function init() {
   quickLoginBtn.textContent = activeProviderLabel === "ChatGPT / Codex login"
     ? "ChatGPT active"
     : "ChatGPT login";
-  quickLoginBtn.title = "Use your local ChatGPT/Codex login";
+  quickLoginBtn.title = "Ask Codex about this position. Login happens only on the official OpenAI page; backend source is public.";
   coachHeaderActions.appendChild(quickLoginBtn);
   coachColumn.appendChild(coachHeader);
 
@@ -1273,12 +1282,26 @@ function init() {
         quickLoginBtn.textContent = "ChatGPT active";
       } else {
         const loginWindow = openCodexLoginWindow();
+        // Coach the actual board on the live site, not a generic ping.
+        // The login stays one-shot: a fresh device-code login per response.
+        let codexPrompt: string | undefined;
+        try {
+          const fen = gc.viewedFen();
+          const moves = gc.history().join(" ") || "(starting position)";
+          codexPrompt = `Coach this chess position for a club player in one or two short sentences. FEN: ${fen}. Moves so far: ${moves}.`;
+        } catch {
+          codexPrompt = undefined;
+        }
+        const onCodexComplete = GITHUB_PAGES_DEMO
+          ? (text: string) => addChatBubble("assistant", text, "Codex")
+          : undefined;
         const response = await startProviderLogin(
           "codex",
-          GITHUB_PAGES_DEMO ? codexEventHandler(chatHint, loginWindow) : undefined,
+          GITHUB_PAGES_DEMO ? codexEventHandler(chatHint, loginWindow, onCodexComplete) : undefined,
+          codexPrompt,
         );
         chatHint.textContent = response.message || "Finish ChatGPT login, then click here again.";
-        quickLoginBtn.textContent = GITHUB_PAGES_DEMO ? "Run Codex test again" : "Finish ChatGPT login";
+        quickLoginBtn.textContent = GITHUB_PAGES_DEMO ? "Ask Codex again" : "Finish ChatGPT login";
       }
     } catch (error) {
       chatHint.textContent = error instanceof Error ? error.message : "ChatGPT login failed";
