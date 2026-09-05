@@ -18,6 +18,8 @@ import {
 } from "./api";
 import { Chess } from "chess.js";
 import type { Key } from "chessground/types";
+import { createOrb } from "./coach-orb";
+import type { CoachOrb } from "./coach-orb";
 import { RemoteUCI } from "./remote";
 
 /** Generate a chessground-compatible board SVG with the given square colors. */
@@ -928,22 +930,35 @@ function init() {
   coachColumn.className = "coach-column";
   layout.appendChild(coachColumn);
 
+  // The orb outlives every panel: declared before the dock so speech,
+  // offers, and playback can all drive its attention states.
+  let orb: CoachOrb | null = null;
+
   // --- Coach dock: the coach as a presence, not a panel ---
   // Original motif: a pawn fused with a neural node — human game, AI mind.
   const coachDock = document.createElement("div");
   coachDock.className = "coach-dock";
   const coachAvatar = document.createElement("span");
   coachAvatar.className = "coach-avatar";
-  coachAvatar.innerHTML =
-    `<svg viewBox="0 0 40 40" width="34" height="34" aria-hidden="true">` +
-    `<circle cx="20" cy="9" r="5" fill="none" stroke="currentColor" stroke-width="2.4"/>` +
-    `<path d="M13 20c1.5-3.5 4-5 7-5s5.5 1.5 7 5l2.5 6h-19z" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/>` +
-    `<rect x="10" y="28.5" width="20" height="3.4" rx="1.7" fill="currentColor"/>` +
-    `<circle cx="6" cy="14" r="1.8" fill="currentColor"/><circle cx="34" cy="14" r="1.8" fill="currentColor"/>` +
-    `<circle cx="6" cy="26" r="1.8" fill="currentColor"/><circle cx="34" cy="26" r="1.8" fill="currentColor"/>` +
-    `<line x1="7.5" y1="15" x2="13" y2="18" stroke="currentColor" stroke-width="1.2"/>` +
-    `<line x1="32.5" y1="15" x2="27" y2="18" stroke="currentColor" stroke-width="1.2"/>` +
-    `</svg>`;
+  const orbCanvas = document.createElement("canvas");
+  orbCanvas.className = "coach-orb";
+  orbCanvas.setAttribute("aria-label", "Coach presence. Activate to talk.");
+  orbCanvas.setAttribute("role", "button");
+  orbCanvas.tabIndex = 0;
+  coachAvatar.appendChild(orbCanvas);
+  orb = createOrb(orbCanvas);
+  const orbTalk = () => {
+    // Tapping the orb repeats the last thing said, or invites speech.
+    if (lastSpokenText) speakText(lastSpokenText, true);
+    else setCoachStatus("I'm here — ask me anything.");
+  };
+  orbCanvas.addEventListener("click", orbTalk);
+  orbCanvas.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      orbTalk();
+    }
+  });
   const coachMeta = document.createElement("div");
   coachMeta.className = "coach-meta";
   const coachNameEl = document.createElement("div");
@@ -1034,6 +1049,7 @@ function init() {
     showBtn.textContent = "▶ Show me";
     showBtn.addEventListener("click", () => {
       coachOffer.hidden = true;
+      orb?.setState("idle");
       void openExplorer();
     });
     const laterBtn = document.createElement("button");
@@ -1042,11 +1058,13 @@ function init() {
     laterBtn.textContent = "Not now";
     laterBtn.addEventListener("click", () => {
       coachOffer.hidden = true;
+      orb?.setState("idle");
       setCoachStatus("watching…");
     });
     coachOffer.append(bubble, showBtn, laterBtn);
     coachOffer.hidden = false;
     setCoachStatus("has an idea…");
+    orb?.setState("watching");
     speakText(text, false, "offer");
   }
 
@@ -1058,10 +1076,14 @@ function init() {
     } catch {
       return;
     }
-    if (ply - lastOfferPly < 8) return;
+    // Initiative dial: chill only fires on hot moments with a long
+    // cooldown; proactive offers tours almost every few moves.
+    const cooldown = initiative === "chill" ? 20 : initiative === "proactive" ? 6 : 8;
+    const idleEvery = initiative === "chill" ? Number.POSITIVE_INFINITY : initiative === "proactive" ? 6 : 12;
+    if (ply - lastOfferPly < cooldown) return;
     const hot = coaching.quality === "mistake" || coaching.quality === "blunder" ||
       coaching.quality === "brilliant";
-    if (!hot && ply - lastOfferPly < 12) return;
+    if (!hot && ply - lastOfferPly < idleEvery) return;
     lastOfferPly = ply;
     let lastSan = "";
     try {
@@ -1152,6 +1174,38 @@ function init() {
   }
   responseModeRow.appendChild(chatModeSelect);
   coachColumn.appendChild(responseModeRow);
+
+  // Coach initiative: how often the coach taps your shoulder unprompted.
+  const INITIATIVE_KEY = "chess-teacher-initiative";
+  let initiative: "chill" | "balanced" | "proactive" =
+    (localStorage.getItem(INITIATIVE_KEY) as "chill" | "balanced" | "proactive" | null) || "balanced";
+  if (!["chill", "balanced", "proactive"].includes(initiative)) initiative = "balanced";
+  const initiativeRow = document.createElement("div");
+  initiativeRow.className = "chat-persona-row";
+  const initiativeLabel = document.createElement("span");
+  initiativeLabel.className = "chat-persona-label";
+  initiativeLabel.textContent = "Coach initiative";
+  initiativeRow.appendChild(initiativeLabel);
+  const initiativeSelect = document.createElement("select");
+  initiativeSelect.className = "chat-persona-select";
+  initiativeSelect.setAttribute("aria-label", "How often the coach speaks up on its own");
+  for (const [value, label] of [
+    ["chill", "Chill · only big moments"],
+    ["balanced", "Balanced · interesting moments"],
+    ["proactive", "Proactive · running commentary"],
+  ]) {
+    const opt = document.createElement("option");
+    opt.value = value;
+    opt.textContent = label;
+    if (value === initiative) opt.selected = true;
+    initiativeSelect.appendChild(opt);
+  }
+  initiativeSelect.addEventListener("change", () => {
+    initiative = initiativeSelect.value as "chill" | "balanced" | "proactive";
+    localStorage.setItem(INITIATIVE_KEY, initiative);
+  });
+  initiativeRow.appendChild(initiativeSelect);
+  coachColumn.appendChild(initiativeRow);
 
   // Pages chat voice: Free Weak AI (no login) or the user's own ChatGPT via
   // Codex (one device-code login per reply, grounded in browser Stockfish).
@@ -1329,8 +1383,14 @@ function init() {
     utterance.rate = speechRate * moodTune[mood].rate;
     utterance.pitch = moodTune[mood].pitch;
     utterance.volume = 1;
-    utterance.onend = syncSpeechControls;
-    utterance.onerror = syncSpeechControls;
+    orb?.setState(mood === "sharp" ? "excited" : "speaking");
+    const settleOrb = () => {
+      orb?.setState("idle");
+      syncSpeechControls();
+    };
+    utterance.onend = settleOrb;
+    utterance.onerror = settleOrb;
+    utterance.onboundary = () => orb?.beat();
     window.speechSynthesis.speak(utterance);
     syncSpeechControls();
   }
@@ -1467,6 +1527,9 @@ function init() {
     };
     composerVoiceBtn.addEventListener("click", () => voiceInputBtn.click());
     voiceInputBtn.addEventListener("click", () => {
+      // Barge-in: the coach stops mid-sentence and listens. Real
+      // conversation means being interruptible.
+      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
       if (recognition) {
         recognition.stop();
         return;
@@ -1989,10 +2052,14 @@ function init() {
       chip.type = "button";
       chip.style.fontWeight = cursor === index + 1 ? "800" : "400";
       chip.style.opacity = cursor === index + 1 ? "1" : "0.75";
+      // Heat: mate burns red, checks orange, captures amber, quiet default.
+      if (ply.checkmate) chip.style.borderColor = "#f87171";
+      else if (ply.check) chip.style.borderColor = "#fb923c";
+      else if (ply.capture) chip.style.borderColor = "#fbbf24";
       const moveNo = Math.floor(index / 2) + 1;
       chip.textContent = (index % 2 === 0 ? `${moveNo}. ` : "") + ply.san;
       chip.title = ply.comment;
-      chip.addEventListener("click", () => goExplorerPly(index + 1, true));
+      chip.addEventListener("click", () => void goExplorerPly(index + 1, true));
       movesRow.appendChild(chip);
     });
     explorerPanel.appendChild(movesRow);
@@ -2001,12 +2068,33 @@ function init() {
     prevBtn.className = "quick-login-btn";
     prevBtn.type = "button";
     prevBtn.textContent = "\u25C0 Prev";
-    prevBtn.addEventListener("click", () => goExplorerPly(cursor - 1, true));
+    prevBtn.addEventListener("click", () => void goExplorerPly(cursor - 1, true));
     const nextBtn = document.createElement("button");
     nextBtn.className = "quick-login-btn";
     nextBtn.type = "button";
     nextBtn.textContent = "Next \u25B6";
-    nextBtn.addEventListener("click", () => goExplorerPly(cursor + 1, true));
+    nextBtn.addEventListener("click", () => void goExplorerPly(cursor + 1, true));
+    const playBtn = document.createElement("button");
+    playBtn.className = "quick-login-btn";
+    playBtn.type = "button";
+    playBtn.textContent = explorer.playing ? "\u23F8 Pause" : "\u25B6 Play";
+    playBtn.title = "Auto-play the line with commentary";
+    playBtn.addEventListener("click", () => togglePlayback());
+    const speedBtn = document.createElement("button");
+    speedBtn.className = "quick-login-btn";
+    speedBtn.type = "button";
+    speedBtn.textContent = `${explorer.speed}\u00D7`;
+    speedBtn.title = "Playback speed";
+    speedBtn.addEventListener("click", () => {
+      if (!explorer) return;
+      explorer.speed = explorer.speed >= 2 ? 1 : explorer.speed + 0.5;
+      if (explorer.playing) {
+        stopPlayback();
+        startPlayback();
+      } else {
+        renderExplorer();
+      }
+    });
     const speakBtn = document.createElement("button");
     speakBtn.className = "quick-login-btn";
     speakBtn.type = "button";
@@ -2025,7 +2113,7 @@ function init() {
     liveBtn.textContent = "Live";
     liveBtn.title = "Back to the live game";
     liveBtn.addEventListener("click", exitExplorer);
-    controls.append(prevBtn, nextBtn, speakBtn, liveBtn);
+    controls.append(prevBtn, nextBtn, playBtn, speedBtn, speakBtn, liveBtn);
     explorerPanel.appendChild(controls);
     const comment = document.createElement("div");
     comment.textContent = cursor === 0
@@ -2034,15 +2122,21 @@ function init() {
     explorerPanel.appendChild(comment);
   }
 
-  function goExplorerPly(next: number, speak: boolean) {
+  async function goExplorerPly(next: number, speak: boolean, glide = true) {
     if (!explorer) return;
     const clamped = Math.max(0, Math.min(next, explorer.line.moves.length));
     explorer.cursor = clamped;
     if (clamped === 0) {
       board.set({ fen: explorer.line.fen });
       board.setAutoShapes([]);
+      hideHand();
     } else {
       const ply = explorer.line.moves[clamped - 1];
+      if (glide) {
+        setCoachStatus("my board for a minute…");
+        await glideHand(ply.uci.slice(0, 2), ply.uci.slice(2, 4), 480);
+        if (!explorer || explorer.cursor !== clamped) return;
+      }
       const turn = ply.fen_after.split(" ")[1] === "b" ? "black" : "white";
       board.set({
         fen: ply.fen_after,
@@ -2050,14 +2144,59 @@ function init() {
         movable: { color: undefined },
         lastMove: [ply.uci.slice(0, 2) as Key, ply.uci.slice(2, 4) as Key],
       });
+      const heat = ply.checkmate || ply.check ? "red" : ply.capture ? "yellow" : "green";
       board.setAutoShapes([{
         orig: ply.uci.slice(0, 2) as Key,
         dest: ply.uci.slice(2, 4) as Key,
-        brush: "green",
+        brush: heat as "green",
       }]);
-      if (speak) speakText(`${ply.san}. ${ply.comment}`);
+      if (speak) {
+        const narration = narratePly(
+          ply, clamped - 1, explorer.line.moves.length, explorer.line.verdict,
+        );
+        orb?.setState(narration.mood === "sharp" ? "excited" : "speaking");
+        speakText(narration.text, false, narration.mood);
+        setCoachStatus(`showing idea ${clamped}/${explorer.line.moves.length}`);
+      }
     }
     renderExplorer();
+  }
+
+  function schedulePlaybackStep() {
+    if (!explorer?.playing) return;
+    explorer.timer = window.setTimeout(() => {
+      if (!explorer || !explorer.playing) return;
+      if (explorer.cursor >= explorer.line.moves.length) {
+        stopPlayback();
+        speakText("Your board again — your move.", false, "verdict");
+        setCoachStatus("watching…");
+        renderExplorer();
+        return;
+      }
+      void goExplorerPly(explorer.cursor + 1, true).then(() => schedulePlaybackStep());
+    }, Math.round(3400 / explorer.speed));
+  }
+
+  function startPlayback() {
+    if (!explorer) return;
+    stopPlayback();
+    explorer.playing = true;
+    if (explorer.cursor >= explorer.line.moves.length) explorer.cursor = 0;
+    speakText("Alright — my board for a minute. Watch.", false, "offer");
+    setCoachStatus("playing the idea… (Live takes it back anytime)");
+    renderExplorer();
+    schedulePlaybackStep();
+  }
+
+  function togglePlayback() {
+    if (!explorer) return;
+    if (explorer.playing) {
+      stopPlayback();
+      setCoachStatus("watching…");
+      renderExplorer();
+    } else {
+      startPlayback();
+    }
   }
 
   async function openExplorer() {

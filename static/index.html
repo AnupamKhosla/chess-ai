@@ -1077,6 +1077,41 @@
     .quick-login-btn { padding: 8px 11px; border: 1px solid var(--accent); border-radius: 7px; background: transparent; color: var(--accent); font: inherit; font-size: 14px; font-weight: 800; cursor: pointer; white-space: nowrap; }
     .quick-login-btn:hover { background: var(--accent-glow); }
     .quick-login-btn:disabled { opacity: 0.62; cursor: wait; }
+    /* CoachCast: the coach as a broadcast presence */
+    .coach-dock {
+      display: flex; gap: 12px; align-items: center;
+      padding: 10px 12px; margin-bottom: 10px;
+      border: 1px solid var(--accent); border-radius: 12px;
+      background: linear-gradient(135deg, var(--accent-glow), transparent 60%);
+    }
+    .coach-avatar { color: var(--accent); display: flex; }
+    .coach-orb { cursor: pointer; border-radius: 50%; }
+    .coach-orb:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .coach-meta { min-width: 0; }
+    .coach-name { font-weight: 800; font-size: 15px; }
+    .coach-status { color: var(--text-muted); font-size: 13px; display: flex; align-items: center; gap: 6px; }
+    .live-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #f87171; display: inline-block; flex: none;
+      animation: live-pulse 1.6s ease-in-out infinite;
+    }
+    @keyframes live-pulse {
+      0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(248,113,113,0.5); }
+      50% { opacity: 0.55; box-shadow: 0 0 0 5px rgba(248,113,113,0); }
+    }
+    .coach-offer {
+      display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+      padding: 10px 12px; margin-bottom: 10px;
+      border: 1px dashed var(--accent); border-radius: 12px;
+      background: var(--accent-glow); font-size: 14px;
+    }
+    .coach-offer[hidden] { display: none; }
+    .ghost-hand {
+      position: fixed; left: 0; top: 0; z-index: 9999;
+      pointer-events: none; opacity: 0;
+      filter: drop-shadow(0 0 6px rgba(74,222,128,0.8));
+      will-change: transform;
+    }
     .coach-header-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; }
     .voice-btn { padding: 8px 11px; border: 1px solid var(--border); border-radius: 7px; background: transparent; color: var(--text-muted); font: inherit; font-size: 14px; font-weight: 800; cursor: pointer; white-space: nowrap; }
     .voice-btn:hover, .voice-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-glow); }
