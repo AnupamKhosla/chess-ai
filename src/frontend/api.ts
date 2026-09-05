@@ -93,12 +93,13 @@ export interface MoveResponse {
 }
 
 const API_BASE = "/api";
-const GITHUB_PAGES_DEMO = typeof window !== "undefined" &&
+export const GITHUB_PAGES_DEMO = typeof window !== "undefined" &&
   window.location.hostname.toLowerCase().endsWith(".github.io");
 const STATIC_DEMO = GITHUB_PAGES_DEMO ||
   (typeof window !== "undefined" && window.location.search.includes("demo=1"));
 const PUBLIC_AI_BASE_URL = "https://api.llm7.io/v1";
 const PUBLIC_AI_MODEL = "mistral-Nemo-Instruct-2407";
+const CODEX_SANDBOX_API_URL = "https://chess-ai-codex-sandbox.vercel.app/api/codex";
 const PUBLIC_AI_COOLDOWN_MS = 7_000;
 const PUBLIC_AI_LAST_REQUEST_KEY = "chess-teacher-public-ai-last-request";
 let publicAiLastRequestAt = 0;
@@ -205,6 +206,119 @@ function publicAiProvider(): ProviderInfo {
     authenticated: null,
     label: "Free Weak AI",
   };
+}
+
+function codexSandboxProvider(): ProviderInfo {
+  return {
+    provider: "codex",
+    kind: "codex-cli",
+    base_url: "",
+    model: "default",
+    effort: "auto",
+    effort_options: ["auto"],
+    has_api_key: false,
+    installed: true,
+    authenticated: false,
+    label: "ChatGPT / Codex login · temporary test",
+  };
+}
+
+export type CodexSandboxEvent =
+  | { type: "login_required"; verificationUrl: string; userCode: string }
+  | { type: "authenticated" }
+  | { type: "delta"; text: string }
+  | { type: "complete"; text: string }
+  | { type: "error"; message: string };
+
+/**
+ * Run the public one-shot Codex test. The function owns the login only for
+ * this request and deletes its temporary session after the response.
+ */
+export async function runCodexSandboxTest(
+  onEvent?: (event: CodexSandboxEvent) => void,
+): Promise<{ text: string }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 280_000);
+  try {
+    const response = await fetch(CODEX_SANDBOX_API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "login_and_test",
+        message: "Confirm that Codex is connected and ready to coach a chess position.",
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`Codex test failed: HTTP ${response.status}`);
+    if (!response.body) throw new Error("Codex test returned no event stream");
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let result: { text: string } | null = null;
+
+    const handleBlock = (block: string) => {
+      const lines = block.split("\n");
+      const eventName = lines.find((line) => line.startsWith("event:"))
+        ?.slice("event:".length).trim();
+      const data = lines
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice("data:".length).trim())
+        .join("\n");
+      if (!eventName || !data) return;
+
+      let payload: Record<string, unknown>;
+      try {
+        payload = JSON.parse(data) as Record<string, unknown>;
+      } catch {
+        throw new Error("Codex test returned invalid event data");
+      }
+      if (eventName === "login_required") {
+        onEvent?.({
+          type: "login_required",
+          verificationUrl: String(payload.verificationUrl || "https://auth.openai.com/codex/device"),
+          userCode: String(payload.userCode || ""),
+        });
+      } else if (eventName === "authenticated") {
+        onEvent?.({ type: "authenticated" });
+      } else if (eventName === "delta") {
+        onEvent?.({ type: "delta", text: String(payload.text || "") });
+      } else if (eventName === "complete") {
+        result = { text: String(payload.text || "") };
+        onEvent?.({ type: "complete", text: result.text });
+      } else if (eventName === "error") {
+        const message = String(payload.message || "Codex test failed");
+        onEvent?.({ type: "error", message });
+        throw new Error(message);
+      }
+    };
+
+    while (!result) {
+      const chunk = await reader.read();
+      buffer += decoder.decode(chunk.value || new Uint8Array(), { stream: !chunk.done });
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary >= 0) {
+        const block = buffer.slice(0, boundary);
+        buffer = buffer.slice(boundary + 2);
+        handleBlock(block);
+        if (result) break;
+        boundary = buffer.indexOf("\n\n");
+      }
+      if (chunk.done) {
+        if (buffer.trim()) handleBlock(buffer);
+        break;
+      }
+    }
+    if (!result) throw new Error("Codex test ended before completing");
+    return result;
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("Codex test timed out; finish the device login and try again.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 type PublicChatMessage = {
@@ -604,22 +718,39 @@ export async function getProviders(): Promise<ProvidersResponse> {
   if (STATIC_DEMO) {
     if (GITHUB_PAGES_DEMO) {
       const provider = publicAiProvider();
+      const codex = codexSandboxProvider();
       return {
         active: provider,
-        providers: [{
-          id: provider.provider,
-          label: provider.label,
-          kind: provider.kind,
-          base_url: provider.base_url,
-          model: provider.model,
-          effort_options: provider.effort_options,
-          requires_key: false,
-          cli_command: null,
-          help: "Free hosted chess explainer · no key or login needed · limited to a small anonymous rate.",
-          installed: null,
-          authenticated: null,
-          active: true,
-        }],
+        providers: [
+          {
+            id: provider.provider,
+            label: provider.label,
+            kind: provider.kind,
+            base_url: provider.base_url,
+            model: provider.model,
+            effort_options: provider.effort_options,
+            requires_key: false,
+            cli_command: null,
+            help: "Free hosted chess explainer · no key or login needed · limited to a small anonymous rate.",
+            installed: null,
+            authenticated: null,
+            active: true,
+          },
+          {
+            id: codex.provider,
+            label: codex.label,
+            kind: codex.kind,
+            base_url: codex.base_url,
+            model: codex.model,
+            effort_options: codex.effort_options,
+            requires_key: false,
+            cli_command: null,
+            help: "Temporary one-response test. Your ChatGPT login is held only in the function process and deleted afterward.",
+            installed: true,
+            authenticated: false,
+            active: false,
+          },
+        ],
         key_storage: "direct browser connection · no key",
       };
     }
@@ -656,10 +787,10 @@ export async function configureProvider(config: {
 }): Promise<{ active: ProviderInfo; key_storage: string }> {
   if (STATIC_DEMO) {
     if (GITHUB_PAGES_DEMO) {
-      if (config.provider !== "llm7-free") {
-        throw new Error("The public demo uses Free Weak AI without a key or login");
+      if (config.provider === "llm7-free") {
+        return { active: publicAiProvider(), key_storage: "direct browser connection · no key" };
       }
-      return { active: publicAiProvider(), key_storage: "direct browser connection · no key" };
+      throw new Error("Codex is available here as a temporary one-response test; use its Sign in button.");
     }
     if (config.provider !== "local") {
       throw new Error("Remote AI connections are available in the local app, not the public static demo");
@@ -678,11 +809,24 @@ export async function configureProvider(config: {
   return res.json();
 }
 
-export async function startProviderLogin(provider: string): Promise<{
+export async function startProviderLogin(
+  provider: string,
+  onEvent?: (event: CodexSandboxEvent) => void,
+): Promise<{
   status: string;
   provider: string;
   message?: string;
 }> {
+  if (GITHUB_PAGES_DEMO && provider === "codex") {
+    const result = await runCodexSandboxTest(onEvent);
+    return {
+      status: "completed",
+      provider,
+      message: result.text
+        ? `Codex connected for this one-shot test. Response: ${result.text}`
+        : "Codex connected for this one-shot test. The temporary session has now been deleted.",
+    };
+  }
   if (STATIC_DEMO) {
     throw new Error("Login is available in the local app, not the public static demo");
   }

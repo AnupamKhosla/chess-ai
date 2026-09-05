@@ -4,6 +4,8 @@ import { GameController, PromotionPiece } from "./game";
 import {
   ChatMessage,
   CoachingData,
+  CodexSandboxEvent,
+  GITHUB_PAGES_DEMO,
   configureProvider,
   getProviders,
   sendChat,
@@ -581,6 +583,38 @@ function init() {
       : `Sign in with ${service}`;
   }
 
+  function openCodexLoginWindow(): Window | null {
+    if (!GITHUB_PAGES_DEMO) return null;
+    return window.open("about:blank", "_blank", "noopener,noreferrer");
+  }
+
+  function codexEventHandler(target: HTMLElement, loginWindow: Window | null) {
+    let streamedText = "";
+    return (event: CodexSandboxEvent) => {
+      if (event.type === "login_required") {
+        if (loginWindow && !loginWindow.closed) {
+          loginWindow.location.href = event.verificationUrl;
+        }
+        const link = document.createElement("a");
+        link.href = event.verificationUrl;
+        link.target = "_blank";
+        link.rel = "noreferrer noopener";
+        link.textContent = "Open ChatGPT login";
+        target.replaceChildren(
+          link,
+          document.createTextNode(` · enter code ${event.userCode} · waiting…`),
+        );
+      } else if (event.type === "authenticated") {
+        target.textContent = "ChatGPT authenticated · Codex is coaching…";
+      } else if (event.type === "delta") {
+        streamedText += event.text;
+        target.textContent = streamedText ? `Codex: ${streamedText}` : "Codex is answering…";
+      } else if (event.type === "error") {
+        target.textContent = event.message;
+      }
+    };
+  }
+
   function fillProviderFields(providerId: string) {
     const preset = providerPresets.find((item) => item.id === providerId);
     if (!preset) return;
@@ -653,6 +687,7 @@ function init() {
     const preset = providerPresets.find((item) => item.id === providerId);
     if (!preset || (preset.kind !== "codex-cli" && preset.kind !== "claude-cli")) return;
     providerLoginBtn.disabled = true;
+    const loginWindow = providerId === "codex" ? openCodexLoginWindow() : null;
     try {
       if (preset.authenticated) {
         const response = await configureProvider({
@@ -666,11 +701,17 @@ function init() {
         syncAgentStatus?.(activeProviderLabel);
         providerStatus.textContent = `${activeProviderLabel} active · local login selected`;
       } else {
-        const response = await startProviderLogin(providerId);
+        const response = await startProviderLogin(
+          providerId,
+          providerId === "codex" ? codexEventHandler(providerStatus, loginWindow) : undefined,
+        );
         providerStatus.textContent = response.message || "Login started in a browser window.";
+        if (providerId === "codex" && GITHUB_PAGES_DEMO) {
+          providerLoginBtn.textContent = "Run Codex test again";
+        }
       }
     } catch (error) {
-        providerStatus.textContent = studentFacingProviderText(error instanceof Error ? error.message : "Login failed");
+      providerStatus.textContent = studentFacingProviderText(error instanceof Error ? error.message : "Login failed");
     } finally {
       providerLoginBtn.disabled = false;
     }
@@ -1231,9 +1272,13 @@ function init() {
         chatHint.textContent = `${response.active.label} active · AI directs opponent moves`;
         quickLoginBtn.textContent = "ChatGPT active";
       } else {
-        const response = await startProviderLogin("codex");
+        const loginWindow = openCodexLoginWindow();
+        const response = await startProviderLogin(
+          "codex",
+          GITHUB_PAGES_DEMO ? codexEventHandler(chatHint, loginWindow) : undefined,
+        );
         chatHint.textContent = response.message || "Finish ChatGPT login, then click here again.";
-        quickLoginBtn.textContent = "Finish ChatGPT login";
+        quickLoginBtn.textContent = GITHUB_PAGES_DEMO ? "Run Codex test again" : "Finish ChatGPT login";
       }
     } catch (error) {
       chatHint.textContent = error instanceof Error ? error.message : "ChatGPT login failed";
