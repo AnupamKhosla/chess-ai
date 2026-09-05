@@ -2297,6 +2297,32 @@ function init() {
     }
   });
 
+  // PGN export (click to copy). Built from the live game, not the server,
+  // so it works identically in the local app and the static demo.
+  const pgnBtn = document.createElement("button");
+  pgnBtn.className = "quick-login-btn";
+  pgnBtn.type = "button";
+  pgnBtn.textContent = "Copy PGN";
+  pgnBtn.title = "Copy this game as PGN";
+  pgnBtn.addEventListener("click", async () => {
+    try {
+      const replay = new Chess();
+      for (const san of gc.history()) replay.move(san);
+      const pgn = replay.pgn();
+      await navigator.clipboard.writeText(pgn);
+      pgnBtn.textContent = "Copied!";
+      setTimeout(() => {
+        pgnBtn.textContent = "Copy PGN";
+      }, 1500);
+    } catch {
+      pgnBtn.textContent = "Failed";
+      setTimeout(() => {
+        pgnBtn.textContent = "Copy PGN";
+      }, 1500);
+    }
+  });
+  rightPanel.appendChild(pgnBtn);
+
   // --- Promotion UI ---
   function showPromotionChooser(
     isWhite: boolean,

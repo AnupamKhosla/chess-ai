@@ -59,6 +59,13 @@ small anonymous free language-model endpoint directly from the browser:
   (live at `https://chess-ai-codex-sandbox.vercel.app`). Login happens only
   on the official `auth.openai.com` page; our pages never see your password
   and the backend deletes its temporary session after each response.
+- **Ask toggle (live site)** — the chat box answers via Free Weak AI or your
+  own Codex login, one voice at a time. Codex replies are grounded in
+  browser-Stockfish facts, including tempting-but-flawed trap lines with
+  refutations.
+- **Show me the idea** — step through the engine's best line (or the trap
+  tab) with arrows, per-move spoken commentary, autoplay, and a ghost hand
+  playing the moves. Instant color grades tint your moves in the move list.
 
 This public route is intentionally limited to short explanations. The local
 FastAPI app remains the full Stockfish-plus-provider architecture described
