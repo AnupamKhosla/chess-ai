@@ -21,6 +21,11 @@ from server.opponent import select_opponent_move
 from server.rag import ChessRAG
 from server.report import serialize_report
 from server.session_store import SessionStore
+from server.toolsloop import (
+    execute_tool_request,
+    extract_tool_request,
+    tool_result_message,
+)
 
 
 @dataclass
@@ -272,6 +277,19 @@ class GameManager:
             self._teacher.provider_info().get("provider")
             if self._teacher is not None else "local"
         )
+        # Deterministic "what if" grounding: when the student names a concrete
+        # move, attach real engine evidence so the model reasons from facts
+        # instead of memory. Best-effort — chat never breaks over this.
+        what_if_evidence: str | None = None
+        if provider_id != "local" and self._engine is not None:
+            try:
+                what_if_evidence = await self._what_if_evidence(context_fen, message)
+            except (RuntimeError, ValueError, asyncio.TimeoutError):
+                what_if_evidence = None
+        grounded_message = (
+            message if not what_if_evidence
+            else f"{message}\n\nEngine evidence for the what-if (authoritative): {what_if_evidence}"
+        )
         if provider_id == "local":
             response = local_coach_reply(
                 message, state.board, opponent_rating=state.opponent_rating
@@ -279,7 +297,7 @@ class GameManager:
             response_source = "local"
         elif self._teacher is not None:
             response = await self._teacher.chat_conversation(
-                message=message,
+                message=grounded_message,
                 history=list(state.chat_history),
                 fen=context_fen,
                 moves=_history_san(state.board),
@@ -291,7 +309,19 @@ class GameManager:
                 response_mode=response_mode if response_mode in {"fast", "deep"} else "fast",
                 opening_context=opening_context(state.board),
                 thread_key=f"game:{session_id}",
+                advertise_tools=provider_id == "codex",
             )
+            # One-round "what if" tool loop: if the model asked Stockfish for
+            # more evidence via a fenced chesstool block, run it (validated,
+            # bounded) and resume the same thread for the final answer.
+            if response and provider_id == "codex":
+                response = await self._maybe_run_tool_round(
+                    session_id=session_id,
+                    state=state,
+                    context_fen=context_fen,
+                    response=response,
+                    response_mode=response_mode,
+                )
             if response:
                 response_source = "ai"
         if not response:
@@ -330,6 +360,101 @@ class GameManager:
             "provider": self._teacher.provider_info() if self._teacher else None,
             "chat_history": state.chat_history,
         }
+
+    _WHAT_IF_RE = re.compile(
+        r"what\s+if\s+([O0](?:-[O0]){1,2}|[a-h][1-8][a-h][1-8][qrbn]?|[KQRBN][a-h1-8x+#=\-O]{1,7})",
+        re.IGNORECASE,
+    )
+
+    async def _what_if_evidence(self, fen: str, message: str) -> str | None:
+        """Engine evidence for an explicit "what if <move>" question.
+
+        Returns a one-line authoritative summary or None when no legal move
+        is named. Bounded: single position eval at modest depth.
+        """
+        if "what if" not in message.lower():
+            return None
+        match = self._WHAT_IF_RE.search(message)
+        if not match:
+            return None
+        try:
+            board = chess.Board(fen)
+        except ValueError:
+            return None
+        raw = match.group(1)
+        try:
+            if re.fullmatch(r"[a-h][1-8][a-h][1-8][qrbn]?", raw, re.IGNORECASE):
+                move = chess.Move.from_uci(raw.lower())
+            else:
+                move = board.parse_san(raw)
+        except (ValueError, chess.IllegalMoveError, chess.InvalidMoveError):
+            return None
+        if move not in board.legal_moves:
+            return None
+        san = board.san(move)
+        board.push(move)
+        from server.lines import win_percent
+
+        info = await self._engine.evaluate(board.fen(), depth=12)
+        if info.score_mate:
+            verdict = (
+                f"mate in {info.score_mate} for White"
+                if info.score_mate > 0 else f"mate in {abs(info.score_mate)} for Black"
+            )
+        else:
+            cp = info.score_cp or 0
+            verdict = f"{cp / 100:+.2f} pawns ({win_percent(cp):.1f}% White)"
+        return f"After your {san}: {verdict}."
+
+    async def _maybe_run_tool_round(        self,
+        *,
+        session_id: str,
+        state,
+        context_fen: str,
+        response: str,
+        response_mode: str,
+    ) -> str:
+        """Execute one fenced chesstool request and resume for the final answer.
+
+        Bounded by construction: at most one extra model turn, depth-capped
+        engine queries. Any failure returns the original response untouched.
+        """
+        try:
+            request = extract_tool_request(response)
+        except (ValueError, AttributeError):
+            return response
+        if not request or self._teacher is None or self._engine is None:
+            return response
+        logging.getLogger(__name__).info(
+            "Codex requested Stockfish tool %s; executing one bounded round",
+            request.get("tool"),
+        )
+        try:
+            result = await execute_tool_request(
+                self._engine, context_fen, request, depth=14,
+            )
+        except (RuntimeError, ValueError, asyncio.TimeoutError):
+            return response
+        if not result.get("ok"):
+            return response
+        try:
+            follow_up = await self._teacher.chat_conversation(
+                message=tool_result_message(request, result),
+                history=list(state.chat_history),
+                fen=context_fen,
+                moves=_history_san(state.board),
+                side="white",
+                coach=state.coach_name,
+                elo_profile=state.elo_profile,
+                opponent_rating=state.opponent_rating,
+                playing_style=state.opponent_style,
+                response_mode=response_mode if response_mode in {"fast", "deep"} else "fast",
+                opening_context=opening_context(state.board),
+                thread_key=f"game:{session_id}",
+            )
+        except (RuntimeError, ValueError, asyncio.TimeoutError):
+            return response
+        return follow_up or response
 
     async def _enrich_coaching(
         self,

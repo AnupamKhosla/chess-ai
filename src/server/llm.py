@@ -214,6 +214,7 @@ class ChessTeacher:
         response_mode: str = "fast",
         opening_context: str = "",
         thread_key: str | None = None,
+        advertise_tools: bool = False,
     ) -> str | None:
         """Continue a board-aware coaching conversation.
 
@@ -237,6 +238,10 @@ class ChessTeacher:
                 "Claude subscription. If asked who you are, answer honestly "
                 "and briefly."
             )
+        if advertise_tools:
+            from server.toolsloop import tools_hint
+
+            system += "\n\n" + tools_hint()
         system += """
 
 You are the continuous conversation layer of a local chess coach.
