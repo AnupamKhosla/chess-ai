@@ -1124,6 +1124,9 @@
     .speech-rate { width: 82px; accent-color: var(--accent); cursor: pointer; }
     .speech-voice-select { min-width: 0; flex: 1 1 150px; min-height: 34px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-input); color: var(--text); font: inherit; font-size: 13px; }
     .chat-persona-row { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+    .chat-persona-row[hidden] { display: none; }
+    /* The hidden attribute must always win over component display rules. */
+    [hidden] { display: none !important; }
     .chat-persona-label { color: var(--text-muted); font-size: 14px; font-weight: 700; white-space: nowrap; }
     .chat-persona-select { min-width: 0; flex: 1; min-height: 38px; padding: 6px 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-input); color: var(--text); font: inherit; font-size: 14px; cursor: pointer; }
     .chat-persona-select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
