@@ -683,6 +683,11 @@ function init() {
         providerPresets.find((item) => item.id === data.active.provider),
         data.active.authenticated ?? null,
       );
+      // Reflect a server-side Codex session so a refresh doesn't suggest a
+      // login is needed when one isn't.
+      if (!GITHUB_PAGES_DEMO && data.active.provider === "codex" && data.active.authenticated) {
+        quickLoginBtn.textContent = "ChatGPT active";
+      }
     } catch {
       providerStatus.textContent = "Provider setup unavailable until the server is running.";
     }
@@ -1888,14 +1893,21 @@ function init() {
         chatModeSelect.value as "fast" | "deep",
       );
       thinkingBubble.remove();
+      // Label by actual provider so Codex answers are never mistaken for
+      // Free Weak AI (or vice versa) on any host.
+      const answerProvider = response.provider?.provider;
       addChatBubble(
         "assistant",
         studentFacingProviderText(response.message),
-        response.source === "ai"
-          ? "Free Weak AI"
-          : response.source === "local"
-            ? "Free local coach"
-            : "Coach",
+        answerProvider === "codex"
+          ? "Codex"
+          : answerProvider === "claude"
+            ? "Claude"
+            : response.source === "ai"
+              ? "Free Weak AI"
+              : response.source === "local"
+                ? "Free local coach"
+                : "Coach",
       );
     } catch (error) {
       thinkingBubble.remove();

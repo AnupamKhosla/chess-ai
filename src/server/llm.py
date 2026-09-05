@@ -222,6 +222,19 @@ class ChessTeacher:
         system = self._build_system_prompt(
             coach, "normal", elo_profile=elo_profile,
         )
+        provider_id = (self._config.provider or "").strip().lower()
+        if provider_id == "codex":
+            system += (
+                "\n\nYou are ChatGPT, answering through the student's own "
+                "Codex subscription. If asked who you are or whether you are "
+                "ChatGPT, answer yes honestly and briefly."
+            )
+        elif provider_id == "claude":
+            system += (
+                "\n\nYou are Claude, answering through the student's own "
+                "Claude subscription. If asked who you are, answer honestly "
+                "and briefly."
+            )
         system += """
 
 You are the continuous conversation layer of a local chess coach.
