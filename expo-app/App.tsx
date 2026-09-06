@@ -26,6 +26,7 @@ export default function App() {
   const [backend, setBackend] = useState<string | null>(null);
   const [probed, setProbed] = useState(false);
   const [coachName, setCoachName] = useState("Anna");
+  const [diag, setDiag] = useState("boot");
   const game = useGame(backend);
   const [beat, setBeat] = useState(0);
   const voice = useVoice(backend, () => setBeat((b) => b + 1));
@@ -34,16 +35,36 @@ export default function App() {
   useEffect(() => {
     (async () => {
       try {
+        setDiag("reading storage…");
         const [savedUrl, savedName] = await Promise.all([
           AsyncStorage.getItem(BACKEND_KEY),
           AsyncStorage.getItem(COACH_KEY),
         ]);
+        setDiag(`stored=${savedUrl ?? "none"}`);
         if (savedName) setCoachName(savedName);
-        if (savedUrl) {
-          const ok = await probeBackend(savedUrl);
-          setBackend(ok ? savedUrl : null);
+        let effective = savedUrl;
+        if (!effective && __DEV__) {
+          // Dev convenience: simulators reach the dev machine directly, so
+          // a running local server Just Works with zero configuration.
+          // Production builds never probe — they stay in demo until the
+          // user saves a backend explicitly.
+          setDiag("probing localhost:8901…");
+          if (await probeBackend("http://localhost:8901")) {
+            effective = "http://localhost:8901";
+            setDiag("auto-connected localhost");
+          } else if (await probeBackend("http://10.0.2.2:8901")) {
+            effective = "http://10.0.2.2:8901";
+            setDiag("auto-connected emulator host");
+          }
         }
-      } catch {
+        if (effective) {
+          setDiag(`probing ${effective}…`);
+          const ok = await probeBackend(effective);
+          setDiag(`probe=${ok ? "OK" : "FAIL"}`);
+          setBackend(ok ? effective : null);
+        }
+      } catch (e) {
+        setDiag(`error: ${e instanceof Error ? e.message.slice(0, 60) : "?"}`);
         setBackend(null);
       } finally {
         setProbed(true);
@@ -101,9 +122,11 @@ export default function App() {
       </View>
       {!probed || !backend ? (
         <Text style={styles.modeLine}>
-          {!probed ? "Starting…" : "Demo mode — connect a backend in Settings for the full engine."}
+          {!probed ? `Starting… ${diag}` : "Demo mode — connect a backend in Settings for the full engine."}
         </Text>
-      ) : null}
+      ) : (
+        <Text style={styles.connectedLine}>Connected · {backend.replace(/^https?:\/\//, "")}</Text>
+      )}
     </View>
   );
 }
@@ -131,4 +154,5 @@ const styles = StyleSheet.create({
   tabText: { color: theme.muted, fontWeight: "700", fontSize: 13 },
   tabTextOn: { color: theme.accent },
   modeLine: { color: theme.dim, fontSize: 11, textAlign: "center", paddingBottom: 8 },
+  connectedLine: { color: theme.accent, fontSize: 11, textAlign: "center", paddingBottom: 8 },
 });
