@@ -48,6 +48,18 @@ npx expo start
 - `npx tsc --noEmit -p tsconfig.json` typechecks; web export is not a
   supported target (native + Expo Go are).
 
+## Gotchas learned the hard way
+
+- **Red boxes saying "Unimplemented component"** after adding a native
+  library (e.g. react-native-svg): the installed binary predates the pod.
+  Reinstall it — `xcrun simctl install <device> <path-to-ChessTeacher.app>`
+  (or `npx expo run:ios` again). Fast Refresh cannot add native code.
+- **Blank screen, no error, on web AND native**: check the JS entry first.
+  This project ships its own `index.ts` calling `registerRootComponent`
+  because bare `App.tsx` main resolution silently failed to register.
+- **Simulator shows a stale app**: terminate + relaunch picks up fresh JS
+  from Metro; reinstall only when native deps changed.
+
 ## Builds (EAS)
 
 `eas.json` ships development / preview / production profiles:
