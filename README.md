@@ -71,6 +71,24 @@ small anonymous free language-model endpoint directly from the browser:
   tactical habits per day and names the pattern on the third repeat
   ("third fork tonight — pattern, not accident"). Boldness is adjustable
   (Chill / Balanced / Proactive), and Talk always interrupts it mid-sentence.
+- **Conversation modes** — "review my game" gives a 3-bullet post-mortem,
+  "training plan" a weekly plan, "prepare against …" an opening brief,
+  "warm me up" a session starter. Opponent replies pause like a human
+  (HumanTime rhythm), not an instant machine.
+
+### Mobile app (`expo-app/`)
+
+Native iOS/Android client with the same board and coach: Play, Coach, Idea,
+and Settings tabs. Runs fully offline in demo mode (local rules, sparring
+partner, hosted chat) or connects to your FastAPI server for the real
+Stockfish, providers, memory, guided lines, and neural voice.
+
+```bash
+cd expo-app && npm install && npx expo start
+```
+
+Scan with Expo Go, or press `i` for the simulator. Verified on iPhone 16
+and iPad Pro 11-inch; web export is not a supported target.
 This public route is intentionally limited to short explanations. The local
 FastAPI app remains the full Stockfish-plus-provider architecture described
 below.
