@@ -64,6 +64,58 @@ def _intent_from_message(message: str, current: str = "balanced") -> str:
     return current
 
 
+def _conversation_mode(message: str) -> str | None:
+    """Detect what KIND of coaching the student wants (datoga-style routing).
+
+    Returns a response-mode key or None for ordinary chat. Modes shape the
+    reply format; they never change chess truth.
+    """
+    text = message.lower()
+    if any(phrase in text for phrase in (
+        "review my game", "review this game", "post-mortem", "postmortem",
+        "how did i play", "analyze my game", "analyse my game",
+    )):
+        return "review"
+    if any(phrase in text for phrase in (
+        "training plan", "practice plan", "study plan", "what should i work on",
+        "how do i improve", "lesson plan",
+    )):
+        return "plan"
+    if any(phrase in text for phrase in (
+        "prepare against", "prepare for", "opponent plays", "facing the",
+        "tournament prep",
+    )):
+        return "prepare"
+    if any(phrase in text for phrase in (
+        "starting a session", "warm me up", "warm-up", "warmup", "let's train",
+        "lets train",
+    )):
+        return "checkin"
+    return None
+
+
+_CONVERSATION_MODE_NOTES = {
+    "review": (
+        "The student wants a post-mortem. Reply as exactly 3 short bullets: "
+        "best moment, costliest mistake with its refutation, one concrete drill. "
+        "20-50 words total."
+    ),
+    "plan": (
+        "The student wants a practice plan. Reply as exactly 3 numbered steps "
+        "for this week, each naming the position type to drill. 20-50 words total."
+    ),
+    "prepare": (
+        "The student wants opening preparation. Name the most likely reply, "
+        "one trap to know, and one line to have ready. 20-50 words total."
+    ),
+    "checkin": (
+        "The student is starting a session. Reply with one sharp warm-up task "
+        "on this board (a concrete tactic to find or idea to test), then invite "
+        "their first move. 20-50 words total."
+    ),
+}
+
+
 def _rating_from_message(message: str) -> int | None:
     match = re.search(r"\b([4-9]\d{2}|[12]\d{3}|2000|2100|2200|2300|2400|2500|2600|2700|2800|2900|3000)\s*(?:rated|rating|elo)\b", message.lower())
     if not match:
@@ -290,6 +342,12 @@ class GameManager:
             message if not what_if_evidence
             else f"{message}\n\nEngine evidence for the what-if (authoritative): {what_if_evidence}"
         )
+        conversation_mode = _conversation_mode(message)
+        if conversation_mode and conversation_mode in _CONVERSATION_MODE_NOTES:
+            grounded_message = (
+                f"{grounded_message}\n\nResponse format for this turn: "
+                f"{_CONVERSATION_MODE_NOTES[conversation_mode]}"
+            )
         if provider_id == "local":
             response = local_coach_reply(
                 message, state.board, opponent_rating=state.opponent_rating
