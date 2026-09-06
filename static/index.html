@@ -1239,7 +1239,52 @@
       .coach-column, .right-panel { height: auto; }
       .right-panel { grid-column: auto; grid-row: auto; }
       .chat-message, .coach-message { font-size: 15px; }
+      /* Mobile pass: kill iOS auto-zoom, fatten touch targets, tame the orb. */
+      .chat-input { font-size: 16px; }
+      .nav-btn { min-height: 44px; min-width: 44px; }
+      .nav-btn-wide { min-width: 100px; }
+      .quick-login-btn, .chat-send, .chat-ai-move-btn, .speech-control { min-height: 44px; }
+      .voice-controls { flex-wrap: wrap; row-gap: 8px; }
+      canvas.coach-orb { width: 60px !important; height: 60px !important; }
+      .coach-dock { padding: 8px 10px; }
+      .app-header h1 { font-size: 17px; }
     }
+
+    /* === CoachCast makeover: midnight broadcast booth ===
+       Felt-and-spotlight room, wooden board frame, lower-third bubbles. */
+    html[data-theme="dark"] body {
+      background:
+        radial-gradient(1100px 520px at 50% -8%, rgba(74, 222, 128, 0.1), transparent 60%),
+        radial-gradient(900px 700px at 85% 110%, rgba(212, 160, 84, 0.08), transparent 55%),
+        var(--bg-body);
+    }
+    .board-wrap {
+      border-radius: 8px;
+      box-shadow:
+        0 0 0 10px #33261a,
+        0 0 0 12px rgba(212, 160, 84, 0.55),
+        0 0 60px rgba(74, 222, 128, 0.16),
+        0 22px 60px rgba(0, 0, 0, 0.55);
+    }
+    .chat-message.assistant {
+      border-left: 3px solid var(--accent);
+      background: linear-gradient(180deg, rgba(103, 232, 176, 0.13), rgba(103, 232, 176, 0.05));
+    }
+    .live-header-badge {
+      margin-left: 10px;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      color: #f87171;
+      border: 1px solid rgba(248, 113, 113, 0.55);
+      border-radius: 6px;
+      padding: 3px 8px;
+      animation: live-pulse 1.6s ease-in-out infinite;
+      white-space: nowrap;
+    }
+    .app-header h1 { display: inline-flex; align-items: center; }
+    .build-badge { color: var(--text-dim); font-size: 11px; }
+    .engine-pill { border-style: dashed !important; }
   </style>
   <script>
     (function() {

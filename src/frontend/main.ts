@@ -208,6 +208,13 @@ function init() {
   title.textContent = "Chess Teacher";
   header.appendChild(title);
 
+  // Broadcast bug: this room always feels live, because the coach is alive.
+  const liveBadge = document.createElement("span");
+  liveBadge.className = "live-header-badge";
+  liveBadge.title = "Your coach is in the room";
+  liveBadge.textContent = "● LIVE";
+  header.appendChild(liveBadge);
+
   const headerTools = document.createElement("div");
   headerTools.className = "header-tools";
   header.appendChild(headerTools);
@@ -874,6 +881,9 @@ function init() {
   layoutWrap.appendChild(layout);
 
   // --- Footer: source, trust, privacy (bottom nav) ---
+  // BUILD_ID is the visible proof you're running fresh code. Bump it on
+  // every user-facing ship so "looks the same" is checkable, not a feeling.
+  const BUILD_ID = "coachcast-3 · neural-voice";
   const footer = document.createElement("footer");
   footer.className = "app-footer";
   const footerNav = document.createElement("nav");
@@ -907,6 +917,11 @@ function init() {
     privacyPanel.hidden = !privacyPanel.hidden;
   });
   footerNav.append(repoLink, document.createTextNode(" · "), sandboxLink, document.createTextNode(" · "), privacyBtn);
+  const buildBadge = document.createElement("span");
+  buildBadge.className = "build-badge";
+  buildBadge.title = "Frontend build running in this tab";
+  buildBadge.textContent = `· build ${BUILD_ID}`;
+  footerNav.append(document.createTextNode(" "), buildBadge);
   footer.appendChild(footerNav);
   footer.appendChild(privacyPanel);
   root.appendChild(footer);
@@ -1300,6 +1315,45 @@ function init() {
   let speechRate = Number(localStorage.getItem("chess-teacher-speech-rate") || "1");
   if (!Number.isFinite(speechRate)) speechRate = 1;
   let availableVoices: SpeechSynthesisVoice[] = [];
+  // Neural voice engine: "system" = OS speech, "neural" = local Piper voice
+  // served by our own backend (offline, human), "auto" picks neural when
+  // the backend reports it ready. Static demo has no backend → system.
+  let voiceEngine: "auto" | "system" | "neural" =
+    (localStorage.getItem("chess-teacher-voice-engine") as "auto" | "system" | "neural" | null) || "auto";
+  if (voiceEngine !== "auto" && voiceEngine !== "system" && voiceEngine !== "neural") voiceEngine = "auto";
+  let neuralReady = false;
+  let neuralAudio: HTMLAudioElement | null = null;
+  let neuralBeat: number | null = null;
+
+  function stopNeural() {
+    if (neuralBeat !== null) {
+      window.clearInterval(neuralBeat);
+      neuralBeat = null;
+    }
+    if (neuralAudio) {
+      try {
+        neuralAudio.pause();
+        const src = neuralAudio.src;
+        neuralAudio.removeAttribute("src");
+        neuralAudio.load();
+        if (src.startsWith("blob:")) URL.revokeObjectURL(src);
+      } catch {
+        // Best effort; a stuck blip is better than a stuck sentence.
+      }
+      neuralAudio = null;
+    }
+  }
+
+  function stopAllSpeech() {
+    stopNeural();
+    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  }
+
+  function neuralActive(): boolean {
+    if (voiceEngine === "neural") return neuralReady;
+    if (voiceEngine === "system") return false;
+    return neuralReady; // auto
+  }
 
   function syncVoiceButton() {
     voiceOutputBtn.textContent = voiceOutputEnabled ? "🔊 Voice on" : "🔊 Start voice";
@@ -1354,22 +1408,64 @@ function init() {
 
   function syncSpeechControls() {
     repeatSpeechBtn.disabled = !lastSpokenText;
-    const speaking = "speechSynthesis" in window && window.speechSynthesis.speaking;
+    const neuralSpeaking = neuralAudio !== null && !neuralAudio.paused && !neuralAudio.ended;
+    const speaking = neuralSpeaking || ("speechSynthesis" in window && window.speechSynthesis.speaking);
     pauseSpeechBtn.disabled = !speaking && !lastSpokenText;
-    pauseSpeechBtn.textContent = speaking && window.speechSynthesis.paused ? "▶ Resume" : "⏸ Pause";
+    pauseSpeechBtn.textContent = speaking && window.speechSynthesis?.paused ? "▶ Resume" : "⏸ Pause";
     stopSpeechBtn.disabled = !speaking;
     speechRateLabel.textContent = `${speechRate.toFixed(1)}×`;
   }
 
   type SpeakMood = "chat" | "sharp" | "verdict" | "offer";
 
-  function speakText(text: string, force = false, mood: SpeakMood = "chat") {
-    if ((!voiceOutputEnabled && !force) || !("speechSynthesis" in window)) return;
+  async function speakNeural(text: string, mood: SpeakMood): Promise<void> {
     const cleanText = text.replace(/[*_#`]/g, "").slice(0, 1200);
     if (!cleanText) return;
     lastSpokenText = cleanText;
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(cleanText);
+    stopAllSpeech();
+    orb?.setState(mood === "sharp" ? "excited" : "speaking");
+    try {
+      const res = await fetch("/api/voice/speak", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: cleanText }),
+      });
+      if (!res.ok) throw new Error(`voice HTTP ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      neuralAudio = audio;
+      audio.playbackRate = speechRate;
+      // No word-boundary events from a WAV: drive the orb with a beat
+      // timer scaled to speech instead — motion sells the humanity.
+      neuralBeat = window.setInterval(() => orb?.beat(mood === "sharp" ? 1.4 : 1), 170);
+      audio.onended = () => {
+        stopNeural();
+        orb?.setState("idle");
+        syncSpeechControls();
+      };
+      audio.onerror = () => {
+        stopNeural();
+        orb?.setState("idle");
+        syncSpeechControls();
+      };
+      await audio.play();
+    } catch {
+      // Backend voice failed mid-flight: say it with the system voice
+      // rather than going silent. Never leave the orb hanging.
+      stopNeural();
+      speakSystem(cleanText, mood);
+      return;
+    }
+    syncSpeechControls();
+  }
+
+  function speakSystem(text: string, mood: SpeakMood) {
+    if (!("speechSynthesis" in window)) {
+      orb?.setState("idle");
+      return;
+    }
+    const utterance = new SpeechSynthesisUtterance(text);
     const voice = chooseHumanVoice();
     if (voice) utterance.voice = voice;
     // Prosody is the difference between robotic and alive: tactics snap a
@@ -1393,6 +1489,22 @@ function init() {
     utterance.onboundary = () => orb?.beat();
     window.speechSynthesis.speak(utterance);
     syncSpeechControls();
+  }
+
+  function speakText(text: string, force = false, mood: SpeakMood = "chat") {
+    if (!voiceOutputEnabled && !force) return;
+    const cleanText = text.replace(/[*_#`]/g, "").slice(0, 1200);
+    if (!cleanText) return;
+    // Barge-in across engines: a new line always kills the old one first.
+    stopAllSpeech();
+    if (neuralActive()) {
+      lastSpokenText = cleanText;
+      void speakNeural(cleanText, mood);
+      return;
+    }
+    if (!("speechSynthesis" in window)) return;
+    lastSpokenText = cleanText;
+    speakSystem(cleanText, mood);
   }
 
   function speakCoach(text: string) {
@@ -1460,12 +1572,60 @@ function init() {
   voiceSelect.title = "Choose the installed voice used by the coach";
   voiceSelect.setAttribute("aria-label", "Coach voice");
   voiceControls.appendChild(voiceSelect);
+  // Voice engine pill: System (OS speech, everywhere) vs Neural (our own
+  // offline human voice, local app only). Auto-detected, one tap to switch.
+  const enginePill = document.createElement("button");
+  enginePill.className = "speech-control engine-pill";
+  enginePill.type = "button";
+  enginePill.title = "Voice engine: OS speech or local neural voice";
+  enginePill.setAttribute("aria-label", "Voice engine");
+  voiceControls.appendChild(enginePill);
+
+  function syncEnginePill() {
+    const label = voiceEngine === "neural" ? "Neural" : voiceEngine === "system" ? "System" : "Auto";
+    const resolved = neuralActive() ? "Neural" : "System";
+    enginePill.textContent = `🎙 ${label} → ${resolved}`;
+    enginePill.disabled = !neuralReady && voiceEngine !== "auto";
+    enginePill.title = neuralReady
+      ? `Voice engine ${label} (resolving to ${resolved}). Tap to cycle.`
+      : "Neural voice needs the local app running. Tap to cycle anyway.";
+  }
+
+  enginePill.addEventListener("click", () => {
+    voiceEngine = voiceEngine === "auto" ? "system" : voiceEngine === "system" ? "neural" : "auto";
+    localStorage.setItem("chess-teacher-voice-engine", voiceEngine);
+    syncEnginePill();
+    if (voiceOutputEnabled) speakText(`Voice engine: ${neuralActive() ? "neural" : "system"}.`, true);
+  });
+
+  async function probeNeuralVoice() {
+    try {
+      const res = await fetch("/api/voice/status");
+      if (!res.ok) throw new Error("no backend voice");
+      const data = (await res.json()) as { ready?: boolean };
+      neuralReady = data.ready === true;
+    } catch {
+      neuralReady = false;
+    }
+    syncEnginePill();
+  }
+
   chatComposer.appendChild(voiceControls);
 
   repeatSpeechBtn.addEventListener("click", () => {
     if (lastSpokenText) speakText(lastSpokenText, true);
   });
   pauseSpeechBtn.addEventListener("click", () => {
+    if (neuralAudio && !neuralAudio.paused && !neuralAudio.ended) {
+      neuralAudio.pause();
+      setTimeout(syncSpeechControls, 0);
+      return;
+    }
+    if (neuralAudio && neuralAudio.paused) {
+      void neuralAudio.play().catch(() => undefined);
+      setTimeout(syncSpeechControls, 0);
+      return;
+    }
     if (!("speechSynthesis" in window)) return;
     if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
       window.speechSynthesis.pause();
@@ -1477,7 +1637,8 @@ function init() {
     setTimeout(syncSpeechControls, 0);
   });
   stopSpeechBtn.addEventListener("click", () => {
-    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    stopAllSpeech();
+    orb?.setState("idle");
     syncSpeechControls();
   });
   speechRateInput.addEventListener("input", () => {
@@ -1493,6 +1654,8 @@ function init() {
     syncVoiceChoices();
     window.speechSynthesis.addEventListener?.("voiceschanged", syncVoiceChoices);
   }
+  syncEnginePill();
+  void probeNeuralVoice();
   syncSpeechControls();
   voiceOutputBtn.addEventListener("click", () => {
     voiceOutputEnabled = !voiceOutputEnabled;
@@ -1501,8 +1664,9 @@ function init() {
     if (voiceOutputEnabled) {
       playMoveSound("player");
       speakCoach("Voice coaching is on. I will speak explanations and play a sound for each move.");
-    } else if ("speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
+    } else {
+      stopAllSpeech();
+      orb?.setState("idle");
     }
   });
 
@@ -1529,7 +1693,7 @@ function init() {
     voiceInputBtn.addEventListener("click", () => {
       // Barge-in: the coach stops mid-sentence and listens. Real
       // conversation means being interruptible.
-      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+      stopAllSpeech();
       if (recognition) {
         recognition.stop();
         return;
@@ -1755,7 +1919,8 @@ function init() {
   evalToggle.type = "checkbox";
   evalToggle.checked = localStorage.getItem("chess-teacher-eval-bar") !== "false";
   evalControls.appendChild(evalToggle);
-  evalControls.appendChild(document.createTextNode(" Evaluation bar"));
+  evalControls.appendChild(document.createTextNode(" Tension meter"));
+  evalControls.title = "Live engine evaluation, reframed as game tension";
   rightPanel.appendChild(evalControls);
 
   function setEvalBarEnabled(enabled: boolean) {
@@ -3088,6 +3253,20 @@ function init() {
       await gc.newGame();
       const sessionId = gc.getSessionId();
       if (sessionId) localStorage.setItem("chess-teacher-session-id", sessionId);
+      // First-run greeting: an empty room feels dead. The coach introduces
+      // itself once (never speaks uninvited — voice only if already on).
+      if (!localStorage.getItem("chess-teacher-greeted")) {
+        localStorage.setItem("chess-teacher-greeted", "true");
+        const hello =
+          `Hey — ${coachDisplayName()} here. Play your move and I'll coach it live. ` +
+          `Ask me anything, hit “Show me the idea” for a guided line, or press Talk and just speak.`;
+        addChatBubble("assistant", hello, coachDisplayName(), false);
+        // Layout may still be settling; make sure the greeting is visible.
+        requestAnimationFrame(() => {
+          coachMessages.scrollTop = coachMessages.scrollHeight;
+        });
+        if (voiceOutputEnabled) speakText(hello, true);
+      }
     }
   })();
 

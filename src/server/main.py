@@ -234,6 +234,10 @@ class LineRequest(BaseModel):
     depth: int = Field(default=16, ge=4, le=22)
 
 
+class VoiceRequest(BaseModel):
+    text: str = Field(max_length=1200)
+
+
 class NewGameRequest(BaseModel):
     depth: int = 10
     elo_profile: str = "intermediate"
@@ -440,6 +444,37 @@ async def analysis_line(req: LineRequest):
         trap_lines = []
     result["traps"] = trap_lines
     return result
+
+
+@app.get("/api/voice/status")
+async def voice_status():
+    """Report whether the local neural voice is ready."""
+    try:
+        from server.voice import VOICE_NAME, voice_available
+
+        ready = voice_available()
+    except ImportError:
+        ready, VOICE_NAME = False, "en_US-lessac-high"
+    return {"ready": ready, "voice": VOICE_NAME, "engine": "piper"}
+
+
+@app.post("/api/voice/speak")
+async def voice_speak(req: VoiceRequest):
+    """Render coach text to WAV with the local neural voice (offline)."""
+    try:
+        from server.voice import synthesize_wav_async, voice_available
+
+        if not voice_available():
+            raise HTTPException(
+                status_code=503,
+                detail="Neural voice model not installed. Run: python scripts/download_voice.py",
+            )
+        wav = await synthesize_wav_async(req.text)
+    except HTTPException:
+        raise
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return Response(content=wav, media_type="audio/wav")
 
 
 @app.post("/api/game/new")
