@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { Chess } from "chess.js";
-import Board, { BoardArrow } from "../components/Board";
+import Board, { BoardArrow, boardSizeFor } from "../components/Board";
 import { theme } from "../theme";
 import { fetchLine, type TeachableLine } from "../api";
 import type { useVoice } from "../voice";
@@ -12,7 +12,7 @@ const HEAT: Record<string, string> = { checkmate: "#f87171", check: "#fb923c", c
 
 export default function IdeaScreen({ fen, backend, voice }: { fen: string; backend: string | null; voice: ReturnType<typeof useVoice> }) {
   const { width } = useWindowDimensions();
-  const size = Math.min(width - 32, 480);
+  const size = boardSizeFor(width);
   const [line, setLine] = useState<TeachableLine | null>(null);
   const [view, setView] = useState(0); // 0 = best, 1.. = traps
   const [cursor, setCursor] = useState(0);

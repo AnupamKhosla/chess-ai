@@ -4,12 +4,13 @@ import { useWindowDimensions, ActivityIndicator, Pressable, ScrollView, StyleShe
 import * as Clipboard from "expo-clipboard";
 import { useState } from "react";
 import Board from "../components/Board";
+import { boardSizeFor } from "../components/Board";
 import { GRADE_COLORS, theme } from "../theme";
 import { movesToPgn, useGame } from "../state";
 
 export default function PlayScreen({ game }: { game: ReturnType<typeof useGame> }) {
   const { width } = useWindowDimensions();
-  const size = Math.min(width - 32, 480);
+  const size = boardSizeFor(width);
   const [copied, setCopied] = useState(false);
 
   const copyPgn = async () => {

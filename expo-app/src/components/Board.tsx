@@ -3,7 +3,8 @@
 import { useMemo, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { Chess } from "chess.js";
-import { PIECE_GLYPHS, theme } from "../theme";
+import { theme } from "../theme";
+import { PIECES } from "./Pieces";
 
 export interface BoardArrow {
   from: string;
@@ -23,8 +24,15 @@ interface Props {
 
 const FILES = "abcdefgh";
 
-function squareXY(sq: string, orientation: "white" | "black", cell: number) {
-  let file = FILES.indexOf(sq[0]);
+/**
+ * Board size that grows onto tablets but never overflows phones:
+ * full width on handsets, up to 640pt on iPads and landscape.
+ */
+export function boardSizeFor(windowWidth: number): number {
+  return Math.min(windowWidth - 32, 640);
+}
+
+function squareXY(sq: string, orientation: "white" | "black", cell: number) {  let file = FILES.indexOf(sq[0]);
   let rank = 8 - parseInt(sq[1], 10);
   if (orientation === "black") {
     file = 7 - file;
@@ -93,10 +101,11 @@ export default function Board({ fen, orientation = "white", onMove, arrows = [],
             isSel && { backgroundColor: "#4ade8066" },
           ]}
         >
-          {position[sq] ? (
-            <Text style={[styles.piece, { fontSize: cell * 0.72, color: position[sq][0] === "w" ? "#f5f0e8" : "#14100b" }]}>
-              {PIECE_GLYPHS[position[sq]]}
-            </Text>
+          {position[sq] && PIECES[position[sq]] ? (
+            (() => {
+              const Glyph = PIECES[position[sq]];
+              return <Glyph size={cell * 0.92} />;
+            })()
           ) : null}
           {isTarget ? <View style={[styles.dot, { width: cell * 0.28, height: cell * 0.28, borderRadius: cell * 0.14 }]} /> : null}
         </Pressable>,
