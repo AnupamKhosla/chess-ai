@@ -3261,10 +3261,14 @@ function init() {
           `Hey — ${coachDisplayName()} here. Play your move and I'll coach it live. ` +
           `Ask me anything, hit “Show me the idea” for a guided line, or press Talk and just speak.`;
         addChatBubble("assistant", hello, coachDisplayName(), false);
-        // Layout may still be settling; make sure the greeting is visible.
+        // Layout may still be settling (board/WASM sizing); scroll twice so
+        // the greeting is actually visible, not cut off above the fold.
         requestAnimationFrame(() => {
           coachMessages.scrollTop = coachMessages.scrollHeight;
         });
+        setTimeout(() => {
+          coachMessages.scrollTop = coachMessages.scrollHeight;
+        }, 900);
         if (voiceOutputEnabled) speakText(hello, true);
       }
     }
