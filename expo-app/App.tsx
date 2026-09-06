@@ -4,7 +4,7 @@
  */
 
 import { useEffect, useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { StatusBar } from "expo-status-bar";
 import { theme } from "./src/theme";
@@ -26,9 +26,13 @@ export default function App() {
   const [backend, setBackend] = useState<string | null>(null);
   const [probed, setProbed] = useState(false);
   const [coachName, setCoachName] = useState("Anna");
-  const [diag, setDiag] = useState("boot");
-  const game = useGame(backend);
   const [beat, setBeat] = useState(0);
+  const [diag, setDiag] = useState("boot");
+  const { width } = useWindowDimensions();
+  // iPad/tablets get a condensed tab bar floating in the middle instead of
+  // a stretched full-width strip.
+  const wideTabs = width >= 700;
+  const game = useGame(backend);
   const voice = useVoice(backend, () => setBeat((b) => b + 1));
 
   // Restore settings, probe the saved backend, start a game.
@@ -99,14 +103,14 @@ export default function App() {
         </View>
       </View>
       <View style={styles.body}>
-        {tab === "play" ? <PlayScreen game={game} /> : null}
+        {tab === "play" ? <PlayScreen game={game} backend={backend} /> : null}
         {tab === "coach" ? <CoachScreen game={game} backend={backend} coachName={coachName} voice={voice} beat={beat} /> : null}
         {tab === "idea" ? <IdeaScreen fen={game.fen} backend={backend} voice={voice} /> : null}
         {tab === "settings" ? (
           <SettingsScreen backend={backend} onSave={saveBackend} coachName={coachName} onCoachName={saveCoach} />
         ) : null}
       </View>
-      <View style={styles.tabs}>
+      <View style={[styles.tabs, wideTabs && styles.tabsWide]}>
         {(
           [
             ["play", "♞ Play"],
@@ -115,7 +119,7 @@ export default function App() {
             ["settings", "⚙ Settings"],
           ] as Array<[Tab, string]>
         ).map(([id, label]) => (
-          <Pressable key={id} style={[styles.tab, tab === id && styles.tabOn]} onPress={() => setTab(id)}>
+          <Pressable key={id} style={[styles.tab, wideTabs && styles.tabWide, tab === id && styles.tabOn]} onPress={() => setTab(id)}>
             <Text style={[styles.tabText, tab === id && styles.tabTextOn]}>{label}</Text>
           </Pressable>
         ))}
@@ -150,6 +154,17 @@ const styles = StyleSheet.create({
   body: { flex: 1 },
   tabs: { flexDirection: "row", borderTopWidth: 1, borderTopColor: theme.panelEdge, backgroundColor: theme.panel },
   tab: { flex: 1, paddingVertical: 14, alignItems: "center" },
+  tabWide: { flex: 0, paddingHorizontal: 22 },
+  tabsWide: {
+    alignSelf: "center",
+    width: "100%",
+    maxWidth: 520,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: theme.panelEdge,
+  },
   tabOn: { borderTopWidth: 2, borderTopColor: theme.accent },
   tabText: { color: theme.muted, fontWeight: "700", fontSize: 13 },
   tabTextOn: { color: theme.accent },
