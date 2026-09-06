@@ -28,7 +28,7 @@ export default function PlayScreen({ game }: { game: ReturnType<typeof useGame> 
       <Board
         fen={game.fen}
         size={size}
-        disabled={game.busy || game.aiThinking || game.over}
+        disabled={game.busy || game.aiThinking || game.over || !game.sessionId}
         arrows={game.lastArrows}
         onMove={(from, to) => {
           void game.playMove(from, to);
@@ -56,7 +56,7 @@ export default function PlayScreen({ game }: { game: ReturnType<typeof useGame> 
         <Pressable style={[styles.btn, styles.primary]} onPress={() => void game.newGame()} disabled={game.busy}>
           <Text style={styles.btnPrimaryText}>New Game</Text>
         </Pressable>
-        <Pressable style={styles.btn} onPress={() => void game.playAiMove()} disabled={game.busy || game.aiThinking || game.over}>
+        <Pressable style={styles.btn} onPress={() => void game.playAiMove()} disabled={game.busy || game.aiThinking || game.over || !game.sessionId}>
           <Text style={styles.btnText}>{game.aiThinking ? "Thinking…" : "▶ AI move"}</Text>
         </Pressable>
         <Pressable style={styles.btn} onPress={() => void copyPgn()}>
