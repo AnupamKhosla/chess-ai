@@ -47,3 +47,18 @@ npx expo start
 - Idea lines need the backend (no on-device engine yet).
 - `npx tsc --noEmit -p tsconfig.json` typechecks; web export is not a
   supported target (native + Expo Go are).
+
+## Builds (EAS)
+
+`eas.json` ships development / preview / production profiles:
+
+```bash
+npm install -g eas-cli
+eas login
+eas build --profile preview   # installable APK / ad-hoc iOS
+eas build --profile production  # store builds (needs Apple/Google accounts)
+```
+
+The backend contract (`probeBackend`, game, graded moves, Codex chat, line
+analysis, neural voice) is verified against the local server — see the
+project log for the passing transcript.
