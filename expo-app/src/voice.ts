@@ -16,6 +16,7 @@ export function useVoice(backend: string | null, onBeat?: () => void) {
   const [neuralReady, setNeuralReady] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const soundRef = useRef<Audio.Sound | null>(null);
+  const fileRef = useRef<string | null>(null);
   const beatRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const onBeatRef = useRef(onBeat);
   onBeatRef.current = onBeat;
@@ -44,6 +45,12 @@ export function useVoice(backend: string | null, onBeat?: () => void) {
     }
   }, []);
 
+  const forgetFile = useCallback((uri: string | null) => {
+    if (uri && uri.startsWith("file://")) {
+      FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => undefined);
+    }
+  }, []);
+
   const stop = useCallback(async () => {
     stopBeat();
     try {
@@ -53,6 +60,9 @@ export function useVoice(backend: string | null, onBeat?: () => void) {
     }
     const sound = soundRef.current;
     soundRef.current = null;
+    const file = fileRef.current;
+    fileRef.current = null;
+    forgetFile(file);
     if (sound) {
       try {
         await sound.stopAsync();
@@ -87,10 +97,14 @@ export function useVoice(backend: string | null, onBeat?: () => void) {
           try {
             const comma = uri.indexOf(",");
             if (uri.startsWith("data:") && comma > 0 && FileSystem.cacheDirectory) {
+              // Delete the previous utterance first: WAVs are ~100KB each
+              // and would otherwise pile up in cache forever.
+              forgetFile(fileRef.current);
               const fileUri = `${FileSystem.cacheDirectory}coach-${Date.now()}.wav`;
               await FileSystem.writeAsStringAsync(fileUri, uri.slice(comma + 1), {
                 encoding: "base64",
               });
+              fileRef.current = fileUri;
               uri = fileUri;
             }
           } catch {
