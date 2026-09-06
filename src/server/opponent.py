@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import logging
+import random
 
 import chess
 
@@ -24,6 +25,51 @@ from server.openings import opening_context
 OPENING_CP_THRESHOLD = 30
 MIDDLEGAME_CP_THRESHOLD = 75
 ENDGAME_CP_THRESHOLD = 20
+
+# Humanlike reply-delay bounds (seconds). Deliberately snappier than the
+# maia3-local-stack HumanTime curve this is adapted from: our players asked
+# for human rhythm, not human slowness.
+HUMAN_DELAY_MIN = 0.6
+HUMAN_DELAY_MAX = 4.0
+
+
+def human_think_delay(board: chess.Board, move_uci: str | None = None) -> float:
+    """Seconds a human-like opponent would take before replying.
+
+    Adapted from maia3-local-stack's HumanTime: book-like opening moves are
+    quick, captures/checks/promotions take longer, endgames slower than
+    openings, with jitter so it never feels metronomic. Only used for
+    instant (non-LLM) opponents — language-model turns are slow already.
+    """
+    num_legal = 0
+    try:
+        num_legal = sum(1 for _ in board.legal_moves)
+    except (ValueError, AssertionError):
+        num_legal = 20
+    base = 1.0 + min(num_legal / 12.0, 2.0)
+    if move_uci:
+        try:
+            move = chess.Move.from_uci(move_uci)
+            if board.is_capture(move):
+                base += 0.8
+            board.push(move)
+            if board.is_check():
+                base += 0.8
+            board.pop()
+            if move.promotion:
+                base += 1.0
+        except (ValueError, AssertionError):
+            pass
+    try:
+        pieces = len(board.piece_map())
+    except (ValueError, AssertionError):
+        pieces = 20
+    if pieces >= 28:
+        base *= 0.7
+    elif pieces <= 12:
+        base *= 1.2
+    delay = base * random.uniform(0.7, 1.3)
+    return max(HUMAN_DELAY_MIN, min(delay, HUMAN_DELAY_MAX))
 
 CANDIDATE_COUNT = 5
 SELECTION_DEPTH = 12

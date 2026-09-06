@@ -253,3 +253,18 @@ class TestSelectOpponentMove:
 
         with pytest.raises(AIUnavailableError, match="No move was made"):
             await select_opponent_move(board, engine, teacher=teacher)
+
+
+class TestHumanThinkDelay:
+    def test_bounds(self):
+        from server.opponent import HUMAN_DELAY_MAX, HUMAN_DELAY_MIN, human_think_delay
+
+        board = chess.Board()
+        for _ in range(200):
+            delay = human_think_delay(board, "e2e4")
+            assert HUMAN_DELAY_MIN <= delay <= HUMAN_DELAY_MAX
+
+    def test_bad_board_safe(self):
+        from server.opponent import human_think_delay
+
+        assert 0.6 <= human_think_delay(chess.Board(), "e9e9") <= 4.0

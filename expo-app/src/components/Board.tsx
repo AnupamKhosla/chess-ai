@@ -26,10 +26,10 @@ const FILES = "abcdefgh";
 
 /**
  * Board size that grows onto tablets but never overflows phones:
- * full width on handsets, up to 640pt on iPads and landscape.
+ * full width on handsets, up to 700pt on iPads and landscape.
  */
 export function boardSizeFor(windowWidth: number): number {
-  return Math.min(windowWidth - 32, 640);
+  return Math.min(windowWidth - 32, 700);
 }
 
 function squareXY(sq: string, orientation: "white" | "black", cell: number) {  let file = FILES.indexOf(sq[0]);

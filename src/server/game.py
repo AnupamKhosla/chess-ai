@@ -17,7 +17,7 @@ from server.knowledge import query_knowledge
 from server.llm import ChessTeacher
 from server.local_ai import local_coach_reply
 from server.openings import identify_opening, opening_context
-from server.opponent import select_opponent_move
+from server.opponent import human_think_delay, select_opponent_move
 from server.rag import ChessRAG
 from server.report import serialize_report
 from server.session_store import SessionStore
@@ -802,6 +802,10 @@ is intentional unless the facts support it."""
             playing_style=state.opponent_style,
             persona=state.coach_name,
         )
+        if selection.method != "llm":
+            # Instant engine opponents reply inhumanly fast; pace them like a
+            # human (LLM turns are slow already and need no padding).
+            await asyncio.sleep(human_think_delay(board, selection.uci))
         opponent_move = chess.Move.from_uci(selection.uci)
         board.push(opponent_move)
 
