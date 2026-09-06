@@ -15,8 +15,7 @@ import PlayScreen from "./src/screens/PlayScreen";
 import CoachScreen from "./src/screens/CoachScreen";
 import IdeaScreen from "./src/screens/IdeaScreen";
 import SettingsScreen from "./src/screens/SettingsScreen";
-
-type Tab = "play" | "coach" | "idea" | "settings";
+import type { Tab } from "./src/tabs";
 
 const BACKEND_KEY = "ct-backend-url";
 const COACH_KEY = "ct-coach-name";
@@ -103,7 +102,7 @@ export default function App() {
         </View>
       </View>
       <View style={styles.body}>
-        {tab === "play" ? <PlayScreen game={game} backend={backend} /> : null}
+        {tab === "play" ? <PlayScreen game={game} backend={backend} voice={voice} onNavigate={setTab} /> : null}
         {tab === "coach" ? <CoachScreen game={game} backend={backend} coachName={coachName} voice={voice} beat={beat} /> : null}
         {tab === "idea" ? <IdeaScreen fen={game.fen} backend={backend} voice={voice} /> : null}
         {tab === "settings" ? (

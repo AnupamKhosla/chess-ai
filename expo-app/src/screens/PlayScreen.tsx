@@ -1,20 +1,86 @@
-/** Play tab: board, status, move list with grades, game controls, quick chat. */
+/**
+ * Play tab: top bar (ChatGPT login · settings), fixed board with
+ * drag-to-move, graded moves, quick actions, and full-width AI chat with
+ * a half-screen overlay, arrow-send, voice flip, and options.
+ */
 
-import { useWindowDimensions, ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { useEffect, useState } from "react";
+import {
+  ActivityIndicator,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+} from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Clipboard from "expo-clipboard";
-import { useState } from "react";
 import Board from "../components/Board";
 import { boardSizeFor } from "../components/Board";
+import ChatPanel from "../components/ChatPanel";
 import { GRADE_COLORS, theme } from "../theme";
+import { fetchProviders } from "../api";
 import { movesToPgn, useChat, useGame } from "../state";
+import type { useVoice } from "../voice";
+import type { Tab } from "../tabs";
 
-export default function PlayScreen({ game, backend }: { game: ReturnType<typeof useGame>; backend: string | null }) {
+const SCALE_KEY = "ct-board-scale";
+const ORIENT_KEY = "ct-board-orientation";
+const SCALES = [
+  { id: "s", label: "S", factor: 0.85 },
+  { id: "m", label: "M", factor: 1 },
+  { id: "l", label: "L", factor: 1.12 },
+] as const;
+
+export default function PlayScreen({
+  game,
+  backend,
+  voice,
+  onNavigate,
+}: {
+  game: ReturnType<typeof useGame>;
+  backend: string | null;
+  voice: ReturnType<typeof useVoice>;
+  onNavigate: (tab: Tab) => void;
+}) {
   const { width } = useWindowDimensions();
-  const size = boardSizeFor(width);
+  const [scrollOn, setScrollOn] = useState(true);
   const [copied, setCopied] = useState(false);
-  const [chatInput, setChatInput] = useState("");
+  const [expanded, setExpanded] = useState(false);
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [scaleId, setScaleId] = useState<"s" | "m" | "l">("m");
+  const [flipped, setFlipped] = useState(false);
+  const [loginNote, setLoginNote] = useState<string | null>(null);
   const chat = useChat(backend, game.sessionId, game.fen, game.history);
-  const recent = chat.messages.slice(-3);
+
+  const scale = SCALES.find((s) => s.id === scaleId)?.factor ?? 1;
+  const size = boardSizeFor(width) * scale;
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [s, o] = await Promise.all([AsyncStorage.getItem(SCALE_KEY), AsyncStorage.getItem(ORIENT_KEY)]);
+        if (s === "s" || s === "m" || s === "l") setScaleId(s);
+        if (o === "black") setFlipped(true);
+      } catch {
+        // Defaults stand.
+      }
+    })();
+  }, []);
+
+  const setScale = (id: "s" | "m" | "l") => {
+    setScaleId(id);
+    void AsyncStorage.setItem(SCALE_KEY, id).catch(() => undefined);
+  };
+  const flipBoard = () => {
+    setFlipped((f) => {
+      void AsyncStorage.setItem(ORIENT_KEY, f ? "white" : "black").catch(() => undefined);
+      return !f;
+    });
+  };
 
   const copyPgn = async () => {
     await Clipboard.setStringAsync(movesToPgn(game.history));
@@ -22,15 +88,42 @@ export default function PlayScreen({ game, backend }: { game: ReturnType<typeof 
     setTimeout(() => setCopied(false), 1500);
   };
 
-  const sendQuickChat = async () => {
-    const text = chatInput.trim();
-    if (!text) return;
-    setChatInput("");
-    await chat.send(text);
+  const checkLogin = async () => {
+    if (!backend) {
+      setLoginNote("No backend — demo mode");
+    } else {
+      try {
+        const data = await fetchProviders(backend);
+        const codex = (data?.providers ?? []).find((p: { id?: string }) => p.id === "codex");
+        setLoginNote(codex?.authenticated ? "ChatGPT active" : "Login needed — use the local app");
+      } catch {
+        setLoginNote("Backend unreachable");
+      }
+    }
+    setTimeout(() => setLoginNote(null), 2200);
+  };
+
+  const flipVoice = () => {
+    voice.setEngine(voice.engine === "system" ? "neural" : voice.engine === "neural" ? "auto" : "system");
+  };
+
+  const sendChat = async (text: string) => {
+    const reply = await chat.send(text);
+    if (reply) void voice.speak(reply.text, {});
   };
 
   return (
-    <ScrollView style={styles.root} contentContainerStyle={styles.content}>
+    <ScrollView style={styles.root} contentContainerStyle={styles.content} scrollEnabled={scrollOn}>
+      <View style={styles.topBar}>
+        <Pressable style={styles.topBtn} onPress={() => void checkLogin()}>
+          <Text style={styles.topBtnText}>{loginNote ?? "💬 ChatGPT"}</Text>
+        </Pressable>
+        <Text style={styles.topTitle}>Play</Text>
+        <Pressable style={styles.topBtn} onPress={() => setSettingsOpen(true)} accessibilityLabel="Board settings">
+          <Text style={styles.topBtnText}>⚙</Text>
+        </Pressable>
+      </View>
+
       <View style={styles.statusRow}>
         <Text style={styles.status}>{game.aiThinking ? "AI thinking…" : game.status}</Text>
         {game.aiThinking ? <ActivityIndicator color={theme.accent} /> : null}
@@ -38,11 +131,13 @@ export default function PlayScreen({ game, backend }: { game: ReturnType<typeof 
       <Board
         fen={game.fen}
         size={size}
+        orientation={flipped ? "black" : "white"}
         disabled={game.busy || game.aiThinking || game.over || !game.sessionId}
         arrows={game.lastArrows}
-        onMove={(from, to) => {
-          void game.playMove(from, to);
+        onMove={(from, to, promotion) => {
+          void game.playMove(from, to, promotion);
         }}
+        onDragStateChange={setScrollOn}
       />
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.moves}>
         {game.history.map((m, i) => (
@@ -73,35 +168,91 @@ export default function PlayScreen({ game, backend }: { game: ReturnType<typeof 
           <Text style={styles.btnText}>{copied ? "Copied!" : "Copy PGN"}</Text>
         </Pressable>
       </View>
-      <View style={styles.chatBox}>
-        <Text style={styles.chatTitle}>Ask the coach</Text>
-        {recent.map((m, i) => (
-          <View key={`${i}-${m.text.slice(0, 12)}`} style={[styles.chatBubble, m.role === "user" ? styles.you : styles.coach]}>
-            <Text style={styles.chatRole}>{m.role === "user" ? "You" : "Coach"}</Text>
-            <Text style={styles.chatBody} numberOfLines={4}>
-              {m.text}
-            </Text>
+
+      <ChatPanel
+        title="AI chat"
+        messages={chat.messages}
+        sending={chat.sending}
+        onSend={(t) => void sendChat(t)}
+        voiceOn={voice.engine !== "system"}
+        onFlipVoice={flipVoice}
+        onInfo={() => setOptionsOpen(true)}
+        onExpand={() => setExpanded(true)}
+      />
+
+      <Modal visible={expanded} transparent animationType="slide" onRequestClose={() => setExpanded(false)}>
+        <View style={styles.sheetTop}>
+          <View style={styles.sheetCard}>
+            <ChatPanel
+              title="AI chat"
+              messages={chat.messages}
+              sending={chat.sending}
+              onSend={(t) => void sendChat(t)}
+              voiceOn={voice.engine !== "system"}
+              onFlipVoice={flipVoice}
+              onInfo={() => setOptionsOpen(true)}
+              maxListHeight={10000}
+            />
+            <Pressable style={[styles.btn, styles.sheetClose]} onPress={() => setExpanded(false)}>
+              <Text style={styles.btnText}>Close</Text>
+            </Pressable>
           </View>
-        ))}
-        {recent.length === 0 ? (
-          <Text style={styles.empty}>Ask about this position — the coach answers right here.</Text>
-        ) : null}
-        {chat.sending ? <ActivityIndicator color={theme.accent} style={{ marginTop: 6 }} /> : null}
-        <View style={styles.chatRow}>
-          <TextInput
-            style={styles.chatInput}
-            value={chatInput}
-            onChangeText={setChatInput}
-            placeholder="Why is this move good?"
-            placeholderTextColor={theme.dim}
-            returnKeyType="send"
-            onSubmitEditing={() => void sendQuickChat()}
-          />
-          <Pressable style={[styles.btn, styles.sendBtn]} onPress={() => void sendQuickChat()}>
-            <Text style={styles.btnText}>Send</Text>
-          </Pressable>
         </View>
-      </View>
+      </Modal>
+
+      <Modal visible={optionsOpen} transparent animationType="fade" onRequestClose={() => setOptionsOpen(false)}>
+        <Pressable style={styles.sheetCenter} onPress={() => setOptionsOpen(false)}>
+          <View style={styles.sheetBox} onStartShouldSetResponder={() => true}>
+            <Text style={styles.sheetTitle}>Chat options</Text>
+            {(
+              [
+                ["💡 Show idea lines", () => { setOptionsOpen(false); onNavigate("idea"); }],
+                ["Copy PGN", () => { setOptionsOpen(false); void copyPgn(); }],
+                ["New game", () => { setOptionsOpen(false); void game.newGame(); }],
+              ] as Array<[string, () => void]>
+            ).map(([label, action]) => (
+              <Pressable key={label} style={styles.sheetOption} onPress={action}>
+                <Text style={styles.sheetOptionText}>{label}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </Pressable>
+      </Modal>
+
+      <Modal visible={settingsOpen} transparent animationType="fade" onRequestClose={() => setSettingsOpen(false)}>
+        <Pressable style={styles.sheetCenter} onPress={() => setSettingsOpen(false)}>
+          <View style={styles.sheetBox} onStartShouldSetResponder={() => true}>
+            <Text style={styles.sheetTitle}>Board settings</Text>
+            <Text style={styles.sheetLabel}>Board size</Text>
+            <View style={styles.segRow}>
+              {SCALES.map((s) => (
+                <Pressable
+                  key={s.id}
+                  style={[styles.segBtn, scaleId === s.id && styles.segOn]}
+                  onPress={() => setScale(s.id)}
+                >
+                  <Text style={[styles.segText, scaleId === s.id && styles.segTextOn]}>{s.label}</Text>
+                </Pressable>
+              ))}
+            </View>
+            <Pressable style={styles.sheetOption} onPress={flipBoard}>
+              <Text style={styles.sheetOptionText}>{flipped ? "◉ Black at bottom" : "◯ White at bottom"} — tap to flip</Text>
+            </Pressable>
+            <Pressable
+              style={styles.sheetOption}
+              onPress={() => {
+                flipVoice();
+                setSettingsOpen(false);
+              }}
+            >
+              <Text style={styles.sheetOptionText}>
+                Voice: {voice.engine === "neural" ? "Neural" : voice.engine === "system" ? "System" : "Auto"}
+                {voice.neuralReady ? " (neural ready)" : ""} — tap to cycle
+              </Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Modal>
     </ScrollView>
   );
 }
@@ -109,6 +260,10 @@ export default function PlayScreen({ game, backend }: { game: ReturnType<typeof 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: theme.bg },
   content: { padding: 16, gap: 12, alignItems: "center" },
+  topBar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", alignSelf: "stretch" },
+  topTitle: { color: theme.text, fontWeight: "800", fontSize: 15 },
+  topBtn: { borderWidth: 1, borderColor: theme.panelEdge, borderRadius: 20, paddingVertical: 8, paddingHorizontal: 12, minHeight: 40, justifyContent: "center" },
+  topBtnText: { color: theme.accent, fontWeight: "800", fontSize: 13 },
   statusRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   status: { color: theme.accent, fontWeight: "800", fontSize: 15 },
   moves: { maxHeight: 44, alignSelf: "stretch" },
@@ -136,32 +291,26 @@ const styles = StyleSheet.create({
   primary: { backgroundColor: theme.accent },
   btnText: { color: theme.accent, fontWeight: "800" },
   btnPrimaryText: { color: "#092018", fontWeight: "800" },
-  chatBox: {
-    alignSelf: "stretch",
-    backgroundColor: theme.panel,
-    borderRadius: 12,
+  sheetTop: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)", padding: 12, paddingTop: 48 },
+  sheetCard: {
+    height: "50%",
+    backgroundColor: theme.bg,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: theme.panelEdge,
+    borderColor: theme.accent,
     padding: 12,
     gap: 8,
   },
-  chatTitle: { color: theme.text, fontWeight: "800", fontSize: 14 },
-  chatBubble: { borderRadius: 8, padding: 10, borderWidth: 1 },
-  you: { alignSelf: "flex-end", width: "92%", borderColor: theme.panelEdge, backgroundColor: theme.input },
-  coach: { alignSelf: "stretch", borderColor: "#2c5b3f", backgroundColor: "#0f1f16", borderLeftWidth: 3, borderLeftColor: theme.accent },
-  chatRole: { color: theme.accent, fontSize: 10, fontWeight: "800", letterSpacing: 1, textTransform: "uppercase", marginBottom: 3 },
-  chatBody: { color: theme.text, fontSize: 14, lineHeight: 20 },
-  chatRow: { flexDirection: "row", gap: 8, marginTop: 2 },
-  chatInput: {
-    flex: 1,
-    backgroundColor: theme.input,
-    color: theme.text,
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 12,
-    fontSize: 16,
-    borderWidth: 1,
-    borderColor: theme.panelEdge,
-  },
-  sendBtn: { justifyContent: "center" },
+  sheetClose: { alignSelf: "center" },
+  sheetCenter: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", justifyContent: "center", padding: 24 },
+  sheetBox: { width: "100%", maxWidth: 420, backgroundColor: theme.panel, borderRadius: 14, borderWidth: 1, borderColor: theme.panelEdge, padding: 16, gap: 6 },
+  sheetTitle: { color: theme.text, fontWeight: "800", fontSize: 16, marginBottom: 4 },
+  sheetLabel: { color: theme.muted, fontSize: 13, marginTop: 4 },
+  sheetOption: { borderWidth: 1, borderColor: theme.panelEdge, borderRadius: 10, paddingVertical: 14, paddingHorizontal: 12 },
+  sheetOptionText: { color: theme.text, fontWeight: "700", fontSize: 15 },
+  segRow: { flexDirection: "row", gap: 8 },
+  segBtn: { flex: 1, borderWidth: 1, borderColor: theme.panelEdge, borderRadius: 10, paddingVertical: 12, alignItems: "center" },
+  segOn: { borderColor: theme.accent, backgroundColor: theme.accentDim },
+  segText: { color: theme.muted, fontWeight: "800", fontSize: 15 },
+  segTextOn: { color: theme.accent },
 });

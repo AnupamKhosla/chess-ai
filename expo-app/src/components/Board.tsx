@@ -1,7 +1,11 @@
-/** Tap-tap chessboard with arrow overlays. Zero native deps. */
+/**
+ * Drag-and-drop chessboard with tap fallback and arrow overlays.
+ * Zero native deps. The board itself never scrolls; while a drag is active
+ * it reports via onDragStateChange so the parent ScrollView can lock.
+ */
 
-import { useMemo, useState } from "react";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { useMemo, useRef, useState } from "react";
+import { PanResponder, StyleSheet, View } from "react-native";
 import { Chess } from "chess.js";
 import { theme } from "../theme";
 import { PIECES } from "./Pieces";
@@ -15,11 +19,12 @@ export interface BoardArrow {
 interface Props {
   fen: string;
   orientation?: "white" | "black";
-  onMove?: (from: string, to: string) => void;
+  onMove?: (from: string, to: string, promotion?: string) => void;
   arrows?: BoardArrow[];
   lastMove?: { from: string; to: string } | null;
   disabled?: boolean;
   size: number;
+  onDragStateChange?: (dragging: boolean) => void;
 }
 
 const FILES = "abcdefgh";
@@ -32,7 +37,8 @@ export function boardSizeFor(windowWidth: number): number {
   return Math.min(windowWidth - 32, 700);
 }
 
-function squareXY(sq: string, orientation: "white" | "black", cell: number) {  let file = FILES.indexOf(sq[0]);
+function squareXY(sq: string, orientation: "white" | "black", cell: number) {
+  let file = FILES.indexOf(sq[0]);
   let rank = 8 - parseInt(sq[1], 10);
   if (orientation === "black") {
     file = 7 - file;
@@ -41,8 +47,30 @@ function squareXY(sq: string, orientation: "white" | "black", cell: number) {  l
   return { x: (file + 0.5) * cell, y: (rank + 0.5) * cell };
 }
 
-export default function Board({ fen, orientation = "white", onMove, arrows = [], lastMove, disabled, size }: Props) {
+function squareAt(x: number, y: number, orientation: "white" | "black", cell: number): string | null {
+  if (x < 0 || y < 0 || x >= cell * 8 || y >= cell * 8) return null;
+  let file = Math.floor(x / cell);
+  let rank = Math.floor(y / cell);
+  if (orientation === "black") {
+    file = 7 - file;
+    rank = 7 - rank;
+  }
+  return `${FILES[file]}${8 - rank}`;
+}
+
+export default function Board({
+  fen,
+  orientation = "white",
+  onMove,
+  arrows = [],
+  lastMove,
+  disabled,
+  size,
+  onDragStateChange,
+}: Props) {
   const [selected, setSelected] = useState<string | null>(null);
+  const [drag, setDrag] = useState<{ from: string; x: number; y: number } | null>(null);
+  const dragRef = useRef<{ from: string; moved: boolean } | null>(null);
   const cell = size / 8;
 
   const position = useMemo(() => {
@@ -54,6 +82,8 @@ export default function Board({ fen, orientation = "white", onMove, arrows = [],
     return map;
   }, [fen]);
 
+  const sideToMove = fen.split(" ")[1] === "b" ? "b" : "w";
+
   const legalTargets = useMemo(() => {
     if (!selected) return new Set<string>();
     try {
@@ -64,21 +94,85 @@ export default function Board({ fen, orientation = "white", onMove, arrows = [],
     }
   }, [fen, selected]);
 
-  const handleTap = (sq: string) => {
-    if (disabled) return;
+  const tryMove = (from: string, to: string) => {
+    // Pawn to the last rank auto-promotes to queen (chooser would cost a
+    // native sheet; queen is right ~97% of the time in coaching games).
+    const piece = position[from];
+    const lastRank = sideToMove === "w" ? "8" : "1";
+    const promotion = piece === `${sideToMove}p` && to[1] === lastRank ? "q" : undefined;
+    onMove?.(from, to, promotion);
+  };
+
+  const tapSquare = (sq: string | null) => {
+    if (disabled || !sq) {
+      setSelected(null);
+      return;
+    }
     if (selected && legalTargets.has(sq)) {
-      onMove?.(selected, sq);
+      tryMove(selected, sq);
       setSelected(null);
       return;
     }
     const piece = position[sq];
-    const turn = fen.split(" ")[1] === "b" ? "b" : "w";
-    if (piece && piece[0] === turn) {
+    if (piece && piece[0] === sideToMove) {
       setSelected(selected === sq ? null : sq);
     } else {
       setSelected(null);
     }
   };
+
+  const responder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => !disabled,
+        onMoveShouldSetPanResponder: (_e, g) => !disabled && (Math.abs(g.dx) + Math.abs(g.dy) > 6),
+        onPanResponderGrant: (e) => {
+          const sq = squareAt(e.nativeEvent.locationX, e.nativeEvent.locationY, orientation, cell);
+          const piece = sq ? position[sq] : undefined;
+          if (sq && piece && piece[0] === sideToMove && !disabled) {
+            dragRef.current = { from: sq, moved: false };
+            setDrag({ from: sq, x: e.nativeEvent.locationX, y: e.nativeEvent.locationY });
+          } else {
+            dragRef.current = null;
+          }
+        },
+        onPanResponderMove: (e) => {
+          const d = dragRef.current;
+          if (!d) return;
+          if (!d.moved) {
+            d.moved = true;
+            setSelected(d.from);
+            onDragStateChange?.(true);
+          }
+          setDrag({ from: d.from, x: e.nativeEvent.locationX, y: e.nativeEvent.locationY });
+        },
+        onPanResponderRelease: (e) => {
+          const d = dragRef.current;
+          dragRef.current = null;
+          onDragStateChange?.(false);
+          const sq = squareAt(e.nativeEvent.locationX, e.nativeEvent.locationY, orientation, cell);
+          const wasDrag = d?.moved ?? false;
+          setDrag(null);
+          if (d && wasDrag) {
+            if (sq && sq !== d.from && legalTargets.has(sq)) {
+              tryMove(d.from, sq);
+              setSelected(null);
+            } else {
+              setSelected(d.from);
+            }
+          } else {
+            tapSquare(sq);
+          }
+        },
+        onPanResponderTerminate: () => {
+          dragRef.current = null;
+          setDrag(null);
+          onDragStateChange?.(false);
+        },
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [disabled, orientation, cell, fen, position, sideToMove, selected, legalTargets],
+  );
 
   const squares = [];
   for (let rank = 0; rank < 8; rank++) {
@@ -90,10 +184,10 @@ export default function Board({ fen, orientation = "white", onMove, arrows = [],
       const isLast = lastMove && (lastMove.from === sq || lastMove.to === sq);
       const isSel = selected === sq;
       const isTarget = legalTargets.has(sq);
+      const isDragOrigin = drag?.from === sq;
       squares.push(
-        <Pressable
+        <View
           key={sq}
-          onPress={() => handleTap(sq)}
           style={[
             styles.square,
             { width: cell, height: cell, backgroundColor: light ? "#E4D7BE" : "#7D6B58" },
@@ -101,25 +195,35 @@ export default function Board({ fen, orientation = "white", onMove, arrows = [],
             isSel && { backgroundColor: "#4ade8066" },
           ]}
         >
-          {position[sq] && PIECES[position[sq]] ? (
+          {position[sq] && PIECES[position[sq]] && !isDragOrigin ? (
             (() => {
               const Glyph = PIECES[position[sq]];
               return <Glyph size={cell * 0.92} />;
             })()
           ) : null}
           {isTarget ? <View style={[styles.dot, { width: cell * 0.28, height: cell * 0.28, borderRadius: cell * 0.14 }]} /> : null}
-        </Pressable>,
+        </View>,
       );
     }
   }
 
+  const DragGlyph = drag && position[drag.from] && PIECES[position[drag.from]] ? PIECES[position[drag.from]] : null;
+
   return (
     <View style={[styles.frame, { width: size + 16 }]}>
-      <View style={[styles.board, { width: size, height: size }]}>
+      <View style={[styles.board, { width: size, height: size }]} {...responder.panHandlers}>
         {squares}
         {arrows.map((arrow, i) => (
           <ArrowOverlay key={i} arrow={arrow} orientation={orientation} cell={cell} />
         ))}
+        {drag && DragGlyph ? (
+          <View
+            pointerEvents="none"
+            style={[StyleSheet.absoluteFill, { left: drag.x - cell / 2, top: drag.y - cell / 2, width: cell, height: cell }]}
+          >
+            <DragGlyph size={cell * 0.98} />
+          </View>
+        ) : null}
       </View>
     </View>
   );
@@ -193,10 +297,8 @@ const styles = StyleSheet.create({
   },
   board: { flexDirection: "row", flexWrap: "wrap", borderRadius: 4, overflow: "hidden" },
   square: { alignItems: "center", justifyContent: "center" },
-  piece: { textShadowColor: "rgba(0,0,0,0.55)", textShadowOffset: { width: 0, height: 2 }, textShadowRadius: 3 },
   dot: { position: "absolute", backgroundColor: "rgba(74,222,128,0.75)" },
 });
 
-// Re-exported for tests/consumers that want the pure geometry.
 export { squareXY };
 export type { Props as BoardProps };

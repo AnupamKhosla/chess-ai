@@ -78,16 +78,17 @@ export function useGame(backend: string | null) {
   }, [refreshStatus]);
 
   const playMove = useCallback(
-    async (from: string, to: string) => {
+    async (from: string, to: string, promotion?: string) => {
+      const uci = from + to + (promotion ?? "");
       const base = backendRef.current;
       if (base && sessionId && !sessionId.startsWith("demo-")) {
         setBusy(true);
         try {
-          const res = await apiMove(base, sessionId, from + to);
+          const res = await apiMove(base, sessionId, uci);
           setFen(res.fen);
           setHistory((h) => [
             ...h,
-            { san: res.player_move_san, uci: from + to, grade: res.coaching?.quality ?? null, by: "you" as const },
+            { san: res.player_move_san, uci, grade: res.coaching?.quality ?? null, by: "you" as const },
           ]);
           const arrows = Array.isArray(res.coaching?.arrows)
             ? res.coaching.arrows
@@ -109,10 +110,10 @@ export function useGame(backend: string | null) {
         }
       }
       // Demo: local rules, greedy reply.
-      const applied = applyUci(fen, from + to);
+      const applied = applyUci(fen, uci);
       if (!applied) return false;
       setFen(applied.fen);
-      setHistory((h) => [...h, { san: applied.san, uci: from + to, grade: null, by: "you" }]);
+      setHistory((h) => [...h, { san: applied.san, uci, grade: null, by: "you" }]);
       refreshStatus(applied.fen);
       return true;
     },
