@@ -23,6 +23,8 @@ CLAUDE.md
 docs/plans/
 data/chromadb/
 data/*.db
+# Neural voice models (~100MB+, downloadable) — never commit.
+data/voices/
 .env
 .env.chess
 test-results/

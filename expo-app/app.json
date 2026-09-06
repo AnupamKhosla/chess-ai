@@ -6,10 +6,14 @@
     "orientation": "default",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.user31782.chess-teacher-app"
     },
     "android": {
       "softwareKeyboardLayoutMode": "pan"
-    }
+    },
+    "plugins": [
+      "expo-asset"
+    ]
   }
 }
