@@ -68,6 +68,12 @@ export default function IdeaScreen({ fen, backend, voice }: { fen: string; backe
       <Pressable style={[styles.btn, styles.primary]} onPress={() => void load()} disabled={loading}>
         <Text style={styles.btnPrimaryText}>{loading ? "Reading…" : "💡 Show me the idea"}</Text>
       </Pressable>
+      {!line && !loading && !error ? (
+        <Text style={styles.empty}>
+          Guided engine lines live here: best moves, human traps with refutations, arrows, and spoken steps.
+          {backend ? "" : "\n\nNeeds the backend — connect it in Settings."}
+        </Text>
+      ) : null}
       {loading ? <ActivityIndicator color={theme.accent} /> : null}
       {error ? <Text style={styles.error}>{error}</Text> : null}
       {active ? (
@@ -134,6 +140,7 @@ const styles = StyleSheet.create({
   tabOn: { borderColor: theme.accent, backgroundColor: theme.accentDim },
   tabText: { color: theme.text, fontWeight: "700" },
   verdict: { color: theme.text, fontSize: 14, textAlign: "center", lineHeight: 20 },
+  empty: { color: theme.dim, fontSize: 14, textAlign: "center", lineHeight: 21, paddingHorizontal: 24 },
   chips: { maxHeight: 48, alignSelf: "stretch" },
   chip: { borderWidth: 1, borderColor: theme.panelEdge, backgroundColor: theme.panel, borderRadius: 8, paddingVertical: 10, paddingHorizontal: 10, marginRight: 6 },
   chipOn: { borderColor: theme.accent, backgroundColor: theme.accentDim },

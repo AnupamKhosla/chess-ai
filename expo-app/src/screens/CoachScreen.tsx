@@ -58,8 +58,8 @@ export default function CoachScreen({
             {voice.speaking ? "speaking…" : backend ? "connected · remembers you" : "demo · offline sparring"}
           </Text>
           <Text style={styles.engine}>
-            🎙 {voice.engine === "neural" ? "Neural" : voice.engine === "system" ? "System" : "Auto"}
-            {voice.neuralReady ? " → Neural" : " → System"} · tap to cycle
+            Voice: {voice.engine === "neural" ? "Neural" : voice.engine === "system" ? "System" : "Auto"}
+            {voice.neuralReady ? " → Neural" : " → System"} · tap Voice to cycle
           </Text>
         </View>
         <Pressable
